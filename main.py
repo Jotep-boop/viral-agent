@@ -65,12 +65,13 @@ def run_pipeline(topic: str | None, dry_run: bool) -> None:
     raw_video: Path = _run_stage("Assemble video", assemble_video, clips, audio)
 
     # 4. Captions
-    final_video: Path = _run_stage("Add captions", add_captions, raw_video, audio)
+    final_video: Path = _run_stage("Add captions", add_captions, raw_video, audio,
+                                    script_text=script.full_script)
 
     # 5. Publish (skipped in dry-run)
     if dry_run:
         logger.info("🏁 DRY RUN complete. Final video: %s", final_video)
-        print(f"\n✅ Dry run complete!\nVideo saved to: {final_video.resolve()}")
+        print(f"\nDry run complete!\nVideo saved to: {final_video.resolve()}")
     else:
         url: str = _run_stage(
             "Upload to YouTube",
@@ -81,7 +82,7 @@ def run_pipeline(topic: str | None, dry_run: bool) -> None:
             tags=script.keywords,
         )
         logger.info("🏁 Pipeline complete! %s", url)
-        print(f"\n✅ Done! Video live at: {url}")
+        print(f"\nDone! Video live at: {url}")
 
 
 def main() -> None:

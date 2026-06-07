@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import subprocess
 import tempfile
 from pathlib import Path
@@ -13,6 +14,17 @@ import config
 logger = logging.getLogger(__name__)
 
 PEXELS_VIDEO_URL = "https://api.pexels.com/videos/search"
+
+def _ffmpeg_bin(name: str = "ffmpeg") -> str:
+    """Return full path to ffmpeg/ffprobe, checking common locations."""
+    import shutil
+    path = shutil.which(name)
+    if path:
+        return path
+    candidate = Path(os.environ.get("LOCALAPPDATA", "")) / "WindowsTemp_e2769c81" / f"{name}.exe"
+    if candidate.exists():
+        return str(candidate)
+    return name
 
 
 # ── Pexels footage ────────────────────────────────────────────────────────────
@@ -91,7 +103,7 @@ def assemble_video(clips: list[Path], audio: Path, out_name: str = "raw.mp4") ->
 
     # Concat + add audio
     cmd = [
-        "ffmpeg", "-y",
+        _ffmpeg_bin(), "-y",
         "-f", "concat", "-safe", "0", "-i", str(concat_list),
         "-i", str(audio),
         "-c:v", "libx264", "-preset", "fast", "-crf", "23",
@@ -112,7 +124,7 @@ def _reencode_clip(src: Path, dst: Path) -> None:
         f"crop={w}:{h}"
     )
     cmd = [
-        "ffmpeg", "-y", "-i", str(src),
+        _ffmpeg_bin(), "-y", "-i", str(src),
         "-vf", scale_crop,
         "-r", "30",
         "-c:v", "libx264", "-preset", "ultrafast", "-crf", "28",
@@ -125,14 +137,17 @@ def _reencode_clip(src: Path, dst: Path) -> None:
 def _probe_duration(path: Path) -> float:
     result = subprocess.run(
         [
-            "ffprobe", "-v", "error",
-            "-show_entries", "format=duration",
-            "-of", "default=noprint_wrappers=1:nokey=1",
-            str(path),
+            _ffmpeg_bin(), "-i", str(path),
+            "-f", "null", "-",
         ],
-        capture_output=True, text=True, check=True,
+        capture_output=True, text=True,
     )
-    return float(result.stdout.strip())
+    import re
+    match = re.search(r"Duration:\s*(\d+):(\d+):(\d+)\.(\d+)", result.stderr)
+    if not match:
+        raise RuntimeError(f"Could not determine duration of {path}")
+    h, m, s, cs = match.groups()
+    return int(h) * 3600 + int(m) * 60 + int(s) + int(cs) / 100
 
 
 def _loop_clips(clips: list[Path], target_duration: float) -> list[Path]:

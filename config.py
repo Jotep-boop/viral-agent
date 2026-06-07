@@ -1,15 +1,22 @@
 """config.py — Load and validate all environment variables."""
 import os
+import shutil
 from pathlib import Path
 from dotenv import load_dotenv
 
 load_dotenv()
 
+# ── Ensure ffmpeg is on PATH ─────────────────────────────────────────────────
+if not shutil.which("ffmpeg"):
+    _ffmpeg_candidate = Path(os.environ.get("LOCALAPPDATA", "")) / "WindowsTemp_e2769c81"
+    if (_ffmpeg_candidate / "ffmpeg.exe").exists():
+        os.environ["PATH"] = str(_ffmpeg_candidate) + os.pathsep + os.environ.get("PATH", "")
+
 # ── API keys ──────────────────────────────────────────────────────────────────
 OPENROUTER_API_KEY: str = os.environ.get("OPENROUTER_API_KEY", "")
 OPENROUTER_MODEL: str = os.environ.get("OPENROUTER_MODEL", "anthropic/claude-sonnet-4")
 ELEVENLABS_API_KEY: str = os.environ.get("ELEVENLABS_API_KEY", "")
-ELEVENLABS_VOICE_ID: str = os.environ.get("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM")
+ELEVENLABS_VOICE_ID: str = os.environ.get("ELEVENLABS_VOICE_ID", "CwhRBWXzGAHq8TQ4Fs17")
 PEXELS_API_KEY: str = os.environ.get("PEXELS_API_KEY", "")
 YOUTUBE_CLIENT_SECRETS: str = os.environ.get("YOUTUBE_CLIENT_SECRETS", "client_secrets.json")
 
