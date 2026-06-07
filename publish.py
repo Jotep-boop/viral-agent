@@ -10,7 +10,10 @@ import config
 logger = logging.getLogger(__name__)
 
 _TOKEN_FILE = "youtube_token.json"
-_SCOPES = ["https://www.googleapis.com/auth/youtube.upload"]
+_SCOPES = [
+    "https://www.googleapis.com/auth/youtube.upload",
+    "https://www.googleapis.com/auth/youtube.readonly",
+]
 
 
 def upload_to_youtube(
@@ -84,6 +87,106 @@ def _load_or_create_creds(json, Credentials, InstalledAppFlow, google_auth_reque
     creds = flow.run_local_server(port=0)
     _save_token(pickle, creds)
     return creds
+
+
+def get_channel_stats() -> dict:
+    """Return channel statistics (subscribers, total views, video count)."""
+    from google.oauth2.credentials import Credentials
+    from google_auth_oauthlib.flow import InstalledAppFlow
+    from googleapiclient.discovery import build
+    import google.auth.transport.requests
+    import json
+
+    creds = _load_or_create_creds(json, Credentials, InstalledAppFlow,
+                                   google.auth.transport.requests)
+    youtube = build("youtube", "v3", credentials=creds)
+
+    resp = youtube.channels().list(part="snippet,statistics", mine=True).execute()
+    if not resp.get("items"):
+        return {"error": "No channel found"}
+
+    channel = resp["items"][0]
+    stats = channel["statistics"]
+    return {
+        "channel_title": channel["snippet"]["title"],
+        "subscribers": int(stats.get("subscriberCount", 0)),
+        "total_views": int(stats.get("viewCount", 0)),
+        "video_count": int(stats.get("videoCount", 0)),
+    }
+
+
+def get_video_stats(video_id: str) -> dict:
+    """Return statistics for a specific video."""
+    from google.oauth2.credentials import Credentials
+    from google_auth_oauthlib.flow import InstalledAppFlow
+    from googleapiclient.discovery import build
+    import google.auth.transport.requests
+    import json
+
+    creds = _load_or_create_creds(json, Credentials, InstalledAppFlow,
+                                   google.auth.transport.requests)
+    youtube = build("youtube", "v3", credentials=creds)
+
+    resp = youtube.videos().list(part="snippet,statistics", id=video_id).execute()
+    if not resp.get("items"):
+        return {"error": f"Video {video_id} not found"}
+
+    video = resp["items"][0]
+    stats = video["statistics"]
+    return {
+        "title": video["snippet"]["title"],
+        "views": int(stats.get("viewCount", 0)),
+        "likes": int(stats.get("likeCount", 0)),
+        "comments": int(stats.get("commentCount", 0)),
+        "published_at": video["snippet"]["publishedAt"],
+    }
+
+
+def list_recent_videos(max_results: int = 10) -> list[dict]:
+    """Return recent uploads with their stats."""
+    from google.oauth2.credentials import Credentials
+    from google_auth_oauthlib.flow import InstalledAppFlow
+    from googleapiclient.discovery import build
+    import google.auth.transport.requests
+    import json
+
+    creds = _load_or_create_creds(json, Credentials, InstalledAppFlow,
+                                   google.auth.transport.requests)
+    youtube = build("youtube", "v3", credentials=creds)
+
+    # Get uploads playlist
+    ch_resp = youtube.channels().list(part="contentDetails", mine=True).execute()
+    if not ch_resp.get("items"):
+        return []
+    uploads_id = ch_resp["items"][0]["contentDetails"]["relatedPlaylists"]["uploads"]
+
+    # Get recent videos from uploads playlist
+    pl_resp = youtube.playlistItems().list(
+        part="snippet", playlistId=uploads_id, maxResults=max_results
+    ).execute()
+
+    video_ids = [item["snippet"]["resourceId"]["videoId"]
+                 for item in pl_resp.get("items", [])]
+    if not video_ids:
+        return []
+
+    # Get stats for all videos in one call
+    v_resp = youtube.videos().list(
+        part="snippet,statistics", id=",".join(video_ids)
+    ).execute()
+
+    results = []
+    for v in v_resp.get("items", []):
+        stats = v["statistics"]
+        results.append({
+            "video_id": v["id"],
+            "title": v["snippet"]["title"],
+            "published_at": v["snippet"]["publishedAt"],
+            "views": int(stats.get("viewCount", 0)),
+            "likes": int(stats.get("likeCount", 0)),
+            "comments": int(stats.get("commentCount", 0)),
+        })
+    return results
 
 
 def _save_token(pickle, creds) -> None:

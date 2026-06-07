@@ -125,6 +125,57 @@ def upload_to_youtube(video_path: str, title: str,
         return json.dumps({"error": str(e), "stage": "upload"})
 
 
+@mcp.tool()
+def get_channel_stats() -> str:
+    """Get YouTube channel statistics.
+
+    Returns:
+        JSON with channel_title, subscribers, total_views, video_count.
+    """
+    try:
+        import config  # noqa: F811
+        from publish import get_channel_stats as _get_stats
+        return json.dumps(_get_stats())
+    except Exception as e:
+        return json.dumps({"error": str(e), "stage": "analytics"})
+
+
+@mcp.tool()
+def get_video_stats(video_id: str) -> str:
+    """Get statistics for a specific YouTube video.
+
+    Args:
+        video_id: The YouTube video ID (e.g. "dQw4w9WgXcQ")
+
+    Returns:
+        JSON with title, views, likes, comments, published_at.
+    """
+    try:
+        import config  # noqa: F811
+        from publish import get_video_stats as _get_stats
+        return json.dumps(_get_stats(video_id))
+    except Exception as e:
+        return json.dumps({"error": str(e), "stage": "analytics"})
+
+
+@mcp.tool()
+def list_recent_videos(max_results: int = 10) -> str:
+    """List recent uploaded videos with their performance stats.
+
+    Args:
+        max_results: Number of videos to return (default: 10, max: 50)
+
+    Returns:
+        JSON array of videos with video_id, title, published_at, views, likes, comments.
+    """
+    try:
+        import config  # noqa: F811
+        from publish import list_recent_videos as _list_videos
+        return json.dumps(_list_videos(min(max_results, 50)))
+    except Exception as e:
+        return json.dumps({"error": str(e), "stage": "analytics"})
+
+
 def _get_duration(video_path) -> float:
     from video import _ffmpeg_bin
     result = subprocess.run(
