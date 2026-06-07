@@ -14,6 +14,7 @@ import time
 from pathlib import Path
 
 # ── Logging setup (must happen before importing pipeline modules) ──────────────
+Path("output").mkdir(parents=True, exist_ok=True)
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s  %(levelname)-8s  %(message)s",
