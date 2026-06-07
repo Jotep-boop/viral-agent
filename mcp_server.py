@@ -59,11 +59,15 @@ def generate_video(topic: str, dry_run: bool = True) -> str:
         from video import fetch_footage, assemble_video
         from captions import add_captions
 
+        from datetime import datetime
+        tag = datetime.now().strftime("%Y%m%d_%H%M%S")
+
         script = generate_script(topic)
         audio = text_to_speech(script.full_script)
         clips = fetch_footage(script.keywords)
-        raw_video = assemble_video(clips, audio)
-        final_video = add_captions(raw_video, audio, script_text=script.full_script)
+        raw_video = assemble_video(clips, audio, out_name=f"raw_{tag}.mp4")
+        final_video = add_captions(raw_video, audio, script_text=script.full_script,
+                                    out_name=f"final_{tag}.mp4")
 
         result = {
             "video_path": str(final_video.resolve()),

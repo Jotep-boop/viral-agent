@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import logging
 import time
+from datetime import datetime
 from pathlib import Path
 
 # ── Logging setup (must happen before importing pipeline modules) ──────────────
@@ -58,16 +59,21 @@ def run_pipeline(topic: str | None, dry_run: bool) -> None:
 
     logger.info("Script preview:\n%s", script.full_script[:200])
 
+    # Unique tag per run so videos don't overwrite each other
+    tag = datetime.now().strftime("%Y%m%d_%H%M%S")
+
     # 2. Text → speech
     audio: Path = _run_stage("Text-to-speech", text_to_speech, script.full_script)
 
     # 3. Stock footage + assembly
     clips: list[Path] = _run_stage("Fetch footage", fetch_footage, script.keywords)
-    raw_video: Path = _run_stage("Assemble video", assemble_video, clips, audio)
+    raw_video: Path = _run_stage("Assemble video", assemble_video, clips, audio,
+                                  out_name=f"raw_{tag}.mp4")
 
     # 4. Captions
     final_video: Path = _run_stage("Add captions", add_captions, raw_video, audio,
-                                    script_text=script.full_script)
+                                    script_text=script.full_script,
+                                    out_name=f"final_{tag}.mp4")
 
     # 5. Publish (skipped in dry-run)
     if dry_run:
