@@ -1,0 +1,21 @@
+# Core
+openai>=1.30.0
+python-dotenv>=1.0.0
+
+# Trends / ideas
+pytrends>=4.9.2
+requests>=2.31.0
+
+# TTS
+elevenlabs>=1.3.0
+
+# Video processing
+ffmpeg-python>=0.2.0      # thin wrapper — ffmpeg binary must be on PATH
+
+# Speech-to-text (captions)
+openai-whisper>=20231117
+
+# YouTube upload
+google-api-python-client>=2.120.0
+google-auth-httplib2>=0.2.0
+google-auth-oauthlib>=1.2.0
