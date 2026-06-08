@@ -47,7 +47,7 @@ def run_pipeline(topic: str | None, dry_run: bool) -> None:
 
     from idea import get_trending_topic, generate_script
     from voice import text_to_speech
-    from video import fetch_footage, assemble_video
+    from video import fetch_footage, generate_footage_ai, assemble_video
     from captions import add_captions
     import tracker
     if not dry_run:
@@ -77,8 +77,11 @@ def run_pipeline(topic: str | None, dry_run: bool) -> None:
     # 2. Text → speech
     audio: Path = _run_stage("Text-to-speech", text_to_speech, script.full_script)
 
-    # 3. Stock footage + assembly
-    clips: list[Path] = _run_stage("Fetch footage", fetch_footage, script.keywords)
+    # 3. Footage — AI-generated (fal.ai) when available, else Pexels stock
+    if config.FAL_KEY and script.clips:
+        clips: list[Path] = _run_stage("Generate AI footage", generate_footage_ai, script.clips)
+    else:
+        clips = _run_stage("Fetch stock footage", fetch_footage, script.keywords)
     raw_video: Path = _run_stage("Assemble video", assemble_video, clips, audio,
                                   out_name=f"raw_{tag}.mp4")
 

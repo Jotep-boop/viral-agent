@@ -75,6 +75,43 @@ def _download_file(url: str, dest: Path) -> None:
                 f.write(chunk)
 
 
+# ── fal.ai AI footage ─────────────────────────────────────────────────────────
+
+def generate_footage_ai(clips: list[dict]) -> list[Path]:
+    """Generate video clips via fal.ai using per-clip prompts from the script.
+
+    Runs up to 3 generations in parallel. Falls back to Pexels on error.
+    """
+    import fal_client  # type: ignore
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    os.environ.setdefault("FAL_KEY", config.FAL_KEY)
+
+    def _generate(i: int, clip: dict) -> Path:
+        dest = config.OUTPUT_DIR / "clips" / f"ai_clip_{i:02d}.mp4"
+        prompt = clip["prompt"]
+        duration = str(min(int(clip.get("duration", 5)), 10))
+        logger.info("Generating AI clip %d (%ss): %s", i, duration, prompt[:70])
+        result = fal_client.subscribe(
+            config.FALAI_MODEL,
+            arguments={"prompt": prompt, "duration": duration, "aspect_ratio": "9:16"},
+        )
+        video_url = result["video"]["url"]
+        _download_file(video_url, dest)
+        logger.info("AI clip %d done → %s", i, dest.name)
+        return dest
+
+    paths: dict[int, Path] = {}
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        futures = {pool.submit(_generate, i, c): i for i, c in enumerate(clips)}
+        for f in as_completed(futures):
+            paths[futures[f]] = f.result()
+
+    ordered = [paths[i] for i in sorted(paths)]
+    logger.info("Generated %d AI clip(s).", len(ordered))
+    return ordered
+
+
 # ── ffmpeg assembly ───────────────────────────────────────────────────────────
 
 def assemble_video(clips: list[Path], audio: Path, out_name: str = "raw.mp4") -> Path:

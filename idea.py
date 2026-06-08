@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import requests
 from openai import OpenAI
@@ -17,11 +17,12 @@ logger = logging.getLogger(__name__)
 @dataclass
 class Script:
     topic: str
-    hook: str       # 0-3 sec
-    core: str       # 3-25 sec
-    cta: str        # 25-30 sec
+    hook: str         # 0-3 sec
+    core: str         # 3-25 sec
+    cta: str          # 25-30 sec
     full_script: str
     keywords: list[str]
+    clips: list[dict] = field(default_factory=list)  # per-clip AI video prompts
 
 
 # ── Trending topic ────────────────────────────────────────────────────────────
@@ -227,10 +228,17 @@ Return ONLY valid JSON with this exact structure:
   "core": "Main content (15-20 seconds, 3-4 interesting facts or a mini story)",
   "cta": "Call to action (last 5 seconds, e.g. follow/share)",
   "full_script": "Complete script as one block",
-  "keywords": ["keyword1", "keyword2", "keyword3"]
+  "keywords": ["keyword1", "keyword2", "keyword3"],
+  "clips": [
+    {"prompt": "funny/visual scene description for AI video generation", "duration": 5},
+    {"prompt": "...", "duration": 5},
+    {"prompt": "...", "duration": 5},
+    {"prompt": "...", "duration": 5}
+  ]
 }
 The full_script should be around 80-100 words total — fast-paced narration.
-Keywords MUST be generic English terms suitable for stock footage search (e.g. "ocean waves", "cute animals", "space galaxy") — never use place names or proper nouns as keywords.\
+Keywords MUST be generic English terms for stock footage fallback (e.g. "ocean waves", "cute animals") — no place names.
+Clips: generate 4-5 clips matching the script visually. Each prompt must be a SPECIFIC, funny or entertaining scene — direct like a film: "a golden retriever wearing sunglasses slowly nodding in agreement" not "dog sunglasses". Duration 4-6 seconds each. Portrait/vertical video in mind.\
 """
 
 
@@ -266,6 +274,7 @@ def generate_script(topic: str) -> Script:
         cta=data["cta"],
         full_script=data["full_script"],
         keywords=data.get("keywords", [topic]),
+        clips=data.get("clips", []),
     )
     logger.info("Script generated (%d words).", len(script.full_script.split()))
     return script

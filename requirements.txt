@@ -22,3 +22,6 @@ google-auth-oauthlib>=1.2.0
 
 # MCP server
 mcp>=1.0.0
+
+# AI video generation (fal.ai)
+fal-client>=0.10.0
