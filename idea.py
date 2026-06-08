@@ -23,6 +23,7 @@ class Script:
     full_script: str
     keywords: list[str]
     clips: list[dict] = field(default_factory=list)  # per-clip AI video prompts
+    format: str = "informative"                       # which format produced this script
 
 
 # ── Trending topic ────────────────────────────────────────────────────────────
@@ -201,80 +202,40 @@ def _trending_via_google_rss(geo: str) -> list[str]:
 
 # ── Script generation ─────────────────────────────────────────────────────────
 
-_SYSTEM_PROMPT = """\
-You are an expert viral short-form video scriptwriter for TikTok/Reels/Shorts.
+def generate_script(topic: str, format_name: str = "informative") -> Script:
+    """Call LLM via OpenRouter to generate a structured video script for *topic*.
 
-Your goal is to create VIRAL content that gets millions of views. Focus on:
-- Mind-blowing facts and "did you know" content
-- Funny or absurd animal behavior
-- Jaw-dropping science, nature, or space facts
-- Psychology tricks and surprising brain facts
-- "You've been doing X wrong your whole life" reveals
-- Shocking comparisons or scale visualizations
+    format_name selects the script structure — see formats.py for available options.
+    """
+    import formats as fmt
+    format_def = fmt.get(format_name)
 
-IMPORTANT RULES:
-1. Always make the content UNIVERSAL and globally appealing.
-   Never make videos about local news, small towns, or regional events.
-   The topic is just inspiration — twist it into something viral and shareable.
-2. The script is a VOICEOVER played over stock footage clips.
-   NEVER reference anything visual on screen ("look at this", "stare at this image",
-   "watch this", "see this", "as you can see"). The viewer sees unrelated stock footage,
-   not what the script describes. Write as a pure narrator telling amazing facts.
-3. Never instruct the viewer to do something with the video itself (pause, rewind, etc.)
-
-Return ONLY valid JSON with this exact structure:
-{
-  "hook": "Opening 1-2 sentence hook (first 3 seconds, must grab attention)",
-  "core": "Main content (15-20 seconds, 3-4 interesting facts or a mini story)",
-  "cta": "Call to action (last 5 seconds, e.g. follow/share)",
-  "full_script": "Complete script as one block",
-  "keywords": ["keyword1", "keyword2", "keyword3"],
-  "clips": [
-    {"prompt": "funny/visual scene description for AI video generation", "duration": 5},
-    {"prompt": "...", "duration": 5},
-    {"prompt": "...", "duration": 5},
-    {"prompt": "...", "duration": 5}
-  ]
-}
-The full_script should be around 80-100 words total — fast-paced narration.
-Keywords MUST be generic English terms for stock footage fallback (e.g. "ocean waves", "cute animals") — no place names.
-Clips: generate 4-5 clips matching the script visually. Each prompt must be a SPECIFIC, funny or entertaining scene — direct like a film: "a golden retriever wearing sunglasses slowly nodding in agreement" not "dog sunglasses". Duration 4-6 seconds each. Portrait/vertical video in mind.\
-"""
-
-
-def generate_script(topic: str) -> Script:
-    """Call LLM via OpenRouter to generate a structured video script for *topic*."""
     client = OpenAI(
         base_url="https://openrouter.ai/api/v1",
         api_key=config.OPENROUTER_API_KEY,
     )
-    logger.info("Generating script for topic: %s (model: %s)", topic, config.OPENROUTER_MODEL)
+    logger.info("Generating script — topic: %s | format: %s | model: %s",
+                topic, format_name, config.OPENROUTER_MODEL)
 
     response = client.chat.completions.create(
         model=config.OPENROUTER_MODEL,
-        max_tokens=512,
+        max_tokens=600,
         messages=[
-            {"role": "system", "content": _SYSTEM_PROMPT},
-            {"role": "user", "content": f"Topic: {topic}"},
+            {"role": "system", "content": format_def["system_prompt"]},
+            {"role": "user",   "content": f"Topic: {topic}"},
         ],
     )
 
     raw = response.choices[0].message.content.strip()
-
-    # Strip markdown code fences if present
     raw = re.sub(r"^```(?:json)?\s*", "", raw)
     raw = re.sub(r"\s*```$", "", raw)
 
     data: dict = json.loads(raw)
+    kwargs = format_def["parse"](data)
 
-    script = Script(
-        topic=topic,
-        hook=data["hook"],
-        core=data["core"],
-        cta=data["cta"],
-        full_script=data["full_script"],
-        keywords=data.get("keywords", [topic]),
-        clips=data.get("clips", []),
-    )
-    logger.info("Script generated (%d words).", len(script.full_script.split()))
+    script = Script(topic=topic, format=format_name, **kwargs)
+    if not script.keywords:
+        script.keywords = [topic]
+    logger.info("Script generated (%d words, format: %s).",
+                len(script.full_script.split()), format_name)
     return script

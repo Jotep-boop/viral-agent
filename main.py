@@ -41,9 +41,11 @@ def _run_stage(name: str, fn, *args, **kwargs):
         raise
 
 
-def run_pipeline(topic: str | None, dry_run: bool) -> None:
+def run_pipeline(topic: str | None, dry_run: bool,
+                  video_format: str | None = None) -> None:
     import config
     config.validate_config(skip_youtube=dry_run)
+    video_format = video_format or config.DEFAULT_FORMAT
 
     from idea import get_trending_topic, generate_script
     from voice import text_to_speech
@@ -67,7 +69,8 @@ def run_pipeline(topic: str | None, dry_run: bool) -> None:
     if not topic:
         topic = _run_stage("Get trending topic", get_trending_topic,
                            top_performers=top_performers)
-    script = _run_stage("Generate script", generate_script, topic)
+    script = _run_stage("Generate script", generate_script, topic,
+                        format_name=video_format)
 
     logger.info("Script preview:\n%s", script.full_script[:200])
 
@@ -120,11 +123,13 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Viral video pipeline")
     parser.add_argument("--topic", type=str, default=None,
                         help="Custom topic (default: auto-detect trending)")
+    parser.add_argument("--format", type=str, default=None,
+                        help="Video format: informative, top5 (default: informative)")
     parser.add_argument("--dry-run", action="store_true",
                         help="Run all stages except YouTube upload")
     args = parser.parse_args()
 
-    run_pipeline(topic=args.topic, dry_run=args.dry_run)
+    run_pipeline(topic=args.topic, dry_run=args.dry_run, video_format=args.format)
 
 
 if __name__ == "__main__":

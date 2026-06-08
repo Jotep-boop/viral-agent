@@ -36,18 +36,41 @@ def get_trending_topic(geo: str = "SE") -> str:
 
 
 @mcp.tool()
-def generate_video(topic: str, dry_run: bool = True) -> str:
-    """Generate a viral short-form video from a topic.
+def list_formats() -> str:
+    """List available video formats and their descriptions.
 
-    Runs the full pipeline: script generation, TTS, stock footage,
-    video assembly, and caption burning. Takes about 60 seconds.
-
-    Args:
-        topic: The video topic (e.g. "black holes", "animal facts")
-        dry_run: If True skip YouTube upload (default: True)
+    Use this to discover what formats exist before calling generate_video.
+    Pass the format name to generate_video's `format` parameter.
 
     Returns:
-        JSON with video_path, script, keywords, duration_seconds,
+        JSON object mapping format name → description.
+    """
+    try:
+        import formats as fmt
+        return json.dumps({
+            name: f["description"]
+            for name, f in fmt.FORMATS.items()
+        })
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+@mcp.tool()
+def generate_video(topic: str, format: str = "informative",
+                   dry_run: bool = True) -> str:
+    """Generate a viral short-form video from a topic.
+
+    Runs the full pipeline: script → TTS → AI video clips → assembly → captions.
+    Use list_formats() first to see available formats.
+
+    Args:
+        topic:   The video topic (e.g. "black holes", "animal facts")
+        format:  Video format — "informative" (default) or "top5".
+                 Use list_formats() to see all options.
+        dry_run: If True, skip YouTube upload (default: True)
+
+    Returns:
+        JSON with video_path, script, format, keywords, duration_seconds,
         and optionally youtube_url.
     """
     try:
@@ -56,15 +79,20 @@ def generate_video(topic: str, dry_run: bool = True) -> str:
 
         from idea import generate_script
         from voice import text_to_speech
-        from video import fetch_footage, assemble_video
+        from video import fetch_footage, generate_footage_ai, assemble_video
         from captions import add_captions
 
         from datetime import datetime
         tag = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-        script = generate_script(topic)
+        script = generate_script(topic, format_name=format)
         audio = text_to_speech(script.full_script)
-        clips = fetch_footage(script.keywords)
+
+        if config.FAL_KEY and script.clips:
+            clips = generate_footage_ai(script.clips)
+        else:
+            clips = fetch_footage(script.keywords)
+
         raw_video = assemble_video(clips, audio, out_name=f"raw_{tag}.mp4")
         final_video = add_captions(raw_video, audio, script_text=script.full_script,
                                     out_name=f"final_{tag}.mp4")
@@ -72,6 +100,7 @@ def generate_video(topic: str, dry_run: bool = True) -> str:
         result = {
             "video_path": str(final_video.resolve()),
             "script": script.full_script,
+            "format": script.format,
             "keywords": script.keywords,
             "duration_seconds": _get_duration(final_video),
             "youtube_url": None,
