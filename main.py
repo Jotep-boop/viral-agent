@@ -49,12 +49,24 @@ def run_pipeline(topic: str | None, dry_run: bool) -> None:
     from voice import text_to_speech
     from video import fetch_footage, assemble_video
     from captions import add_captions
+    import tracker
     if not dry_run:
         from publish import upload_to_youtube
 
+    # Refresh historical stats and load top performers for scoring
+    if not dry_run:
+        try:
+            _run_stage("Refresh performance stats", tracker.refresh_stats)
+        except Exception:
+            pass  # non-fatal
+    top_performers = tracker.get_top_performers()
+    if top_performers:
+        logger.info("Top performers loaded: %s", [p["topic"] for p in top_performers])
+
     # 1. Topic + script
     if not topic:
-        topic = _run_stage("Get trending topic", get_trending_topic)
+        topic = _run_stage("Get trending topic", get_trending_topic,
+                           top_performers=top_performers)
     script = _run_stage("Generate script", generate_script, topic)
 
     logger.info("Script preview:\n%s", script.full_script[:200])
@@ -88,6 +100,15 @@ def run_pipeline(topic: str | None, dry_run: bool) -> None:
             description=script.full_script,
             tags=script.keywords,
         )
+        # Log the run for future feedback-loop scoring
+        try:
+            from urllib.parse import urlparse, parse_qs
+            video_id = parse_qs(urlparse(url).query).get("v", [None])[0]
+            if video_id:
+                tracker.log_run(topic=script.topic, video_id=video_id, url=url)
+        except Exception as exc:
+            logger.warning("Could not log run to tracker: %s", exc)
+
         logger.info("🏁 Pipeline complete! %s", url)
         print(f"\nDone! Video live at: {url}")
 
