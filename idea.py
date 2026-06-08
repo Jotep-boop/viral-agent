@@ -26,51 +26,121 @@ class Script:
 
 # ── Trending topic ────────────────────────────────────────────────────────────
 
+_SCORING_PROMPT = """\
+You are a YouTube Shorts content strategist. Pick the BEST topic from the list below to make a viral short-form video (under 60 seconds).
+
+Score each topic on all four criteria:
+1. Hook potential — can it open with a "did you know" or jaw-dropping fact?
+2. Universal appeal — globally interesting, not tied to local news or regional events?
+3. Visual potential — can generic stock footage (nature, animals, space, people) cover it?
+4. Momentum — does it feel fresh and on the rise, not already saturated?
+
+Return ONLY valid JSON:
+{
+  "winner": "the best topic exactly as it appeared in the list",
+  "reason": "one sentence why it wins"
+}"""
+
+
 def get_trending_topic(geo: str = "SE") -> str:
-    """Return a trending search topic. Tries pytrends → Reddit → Google Trends RSS."""
-    try:
-        return _trending_via_pytrends(geo)
-    except Exception as exc:
-        logger.warning("pytrends failed (%s), falling back to Reddit.", exc)
-    try:
-        return _trending_via_reddit()
-    except Exception as exc:
-        logger.warning("Reddit failed (%s), falling back to Google Trends RSS.", exc)
-    return _trending_via_google_rss(geo)
+    """Return the best trending topic for a viral YouTube Short.
+
+    Gathers candidates from multiple sources, then uses an LLM to score
+    and select the one with the highest viral potential.
+    """
+    candidates = get_trending_candidates(geo)
+    if not candidates:
+        raise RuntimeError("No trending candidates found from any source")
+    if len(candidates) == 1:
+        return candidates[0]
+    return score_and_select_topic(candidates)
 
 
-def _trending_via_pytrends(geo: str) -> str:
+def get_trending_candidates(geo: str = "SE") -> list[str]:
+    """Gather trending topic candidates from all available sources."""
+    candidates: list[str] = []
+    sources = [
+        ("Google Trends", _trending_via_pytrends, (geo,)),
+        ("Reddit",        _trending_via_reddit,   ()),
+        ("Google RSS",    _trending_via_google_rss, (geo,)),
+    ]
+    for name, fn, args in sources:
+        try:
+            results = fn(*args)
+            candidates.extend(results)
+            logger.info("%s contributed %d candidates.", name, len(results))
+        except Exception as exc:
+            logger.warning("%s failed (%s), skipping.", name, exc)
+
+    # Deduplicate while preserving insertion order
+    seen: set[str] = set()
+    unique: list[str] = []
+    for c in candidates:
+        key = c.lower().strip()
+        if key not in seen:
+            seen.add(key)
+            unique.append(c)
+
+    logger.info("Total unique candidates across all sources: %d", len(unique))
+    return unique
+
+
+def score_and_select_topic(candidates: list[str]) -> str:
+    """Use LLM to pick the most viral-worthy topic from a list of candidates."""
+    client = OpenAI(
+        base_url="https://openrouter.ai/api/v1",
+        api_key=config.OPENROUTER_API_KEY,
+    )
+    numbered = "\n".join(f"{i + 1}. {t}" for i, t in enumerate(candidates))
+    logger.info("Scoring %d candidates via LLM...", len(candidates))
+
+    response = client.chat.completions.create(
+        model=config.OPENROUTER_MODEL,
+        max_tokens=256,
+        messages=[
+            {"role": "system", "content": _SCORING_PROMPT},
+            {"role": "user",   "content": f"Trending candidates:\n{numbered}"},
+        ],
+    )
+
+    raw = response.choices[0].message.content.strip()
+    raw = re.sub(r"^```(?:json)?\s*", "", raw)
+    raw = re.sub(r"\s*```$", "", raw)
+
+    data: dict = json.loads(raw)
+    winner: str = data["winner"]
+    reason: str = data.get("reason", "")
+    logger.info("Selected topic: %s — %s", winner, reason)
+    return winner
+
+
+def _trending_via_pytrends(geo: str) -> list[str]:
     from pytrends.request import TrendReq  # type: ignore
     pt = TrendReq(hl="sv-SE", tz=60)
     df = pt.trending_searches(pn=geo.lower())
-    topic: str = df.iloc[0, 0]
-    logger.info("Trending topic (Google Trends): %s", topic)
-    return topic
+    topics: list[str] = df.iloc[:10, 0].tolist()
+    return topics
 
 
-def _trending_via_reddit() -> str:
-    url = "https://www.reddit.com/r/popular/hot.json?limit=5"
+def _trending_via_reddit() -> list[str]:
+    url = "https://www.reddit.com/r/popular/hot.json?limit=10"
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0 Safari/537.36"}
     resp = requests.get(url, headers=headers, timeout=10)
     resp.raise_for_status()
     posts = resp.json()["data"]["children"]
-    topic: str = posts[0]["data"]["title"]
-    logger.info("Trending topic (Reddit): %s", topic)
-    return topic
+    return [p["data"]["title"] for p in posts]
 
 
-def _trending_via_google_rss(geo: str) -> str:
+def _trending_via_google_rss(geo: str) -> list[str]:
+    import xml.etree.ElementTree as ET
     url = f"https://trends.google.com/trending/rss?geo={geo.upper()}"
     resp = requests.get(url, timeout=10)
     resp.raise_for_status()
-    import xml.etree.ElementTree as ET
     root = ET.fromstring(resp.text)
-    title = root.find(".//item/title")
-    if title is None or not title.text:
+    titles = [el.text.strip() for el in root.findall(".//item/title") if el.text]
+    if not titles:
         raise RuntimeError("No trending topics found in Google RSS feed")
-    topic = title.text.strip()
-    logger.info("Trending topic (Google RSS): %s", topic)
-    return topic
+    return titles
 
 
 # ── Script generation ─────────────────────────────────────────────────────────
