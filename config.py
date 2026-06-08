@@ -19,6 +19,7 @@ ELEVENLABS_API_KEY: str = os.environ.get("ELEVENLABS_API_KEY", "")
 ELEVENLABS_VOICE_ID: str = os.environ.get("ELEVENLABS_VOICE_ID", "CwhRBWXzGAHq8TQ4Fs17")
 PEXELS_API_KEY: str = os.environ.get("PEXELS_API_KEY", "")
 YOUTUBE_CLIENT_SECRETS: str = os.environ.get("YOUTUBE_CLIENT_SECRETS", "client_secrets.json")
+YOUTUBE_API_KEY: str = os.environ.get("YOUTUBE_API_KEY", "")
 
 # ── Pipeline settings ─────────────────────────────────────────────────────────
 OUTPUT_DIR: Path = Path(os.environ.get("OUTPUT_DIR", "output"))

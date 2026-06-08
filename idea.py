@@ -60,6 +60,7 @@ def get_trending_candidates(geo: str = "SE") -> list[str]:
     """Gather trending topic candidates from all available sources."""
     candidates: list[str] = []
     sources = [
+        ("YouTube",       _trending_via_youtube,     (geo,)),
         ("Google Trends", _trending_via_pytrends,    (geo,)),
         ("Hacker News",   _trending_via_hackernews,  ()),
         ("Google RSS",    _trending_via_google_rss,  (geo,)),
@@ -112,6 +113,26 @@ def score_and_select_topic(candidates: list[str]) -> str:
     reason: str = data.get("reason", "")
     logger.info("Selected topic: %s — %s", winner, reason)
     return winner
+
+
+def _trending_via_youtube(geo: str) -> list[str]:
+    """Fetch titles of the most popular YouTube videos in the given region."""
+    if not config.YOUTUBE_API_KEY:
+        raise RuntimeError("YOUTUBE_API_KEY not configured")
+    resp = requests.get(
+        "https://www.googleapis.com/youtube/v3/videos",
+        params={
+            "part": "snippet",
+            "chart": "mostPopular",
+            "regionCode": geo.upper(),
+            "maxResults": 10,
+            "key": config.YOUTUBE_API_KEY,
+        },
+        timeout=10,
+    )
+    resp.raise_for_status()
+    items = resp.json().get("items", [])
+    return [item["snippet"]["title"] for item in items if "snippet" in item]
 
 
 def _trending_via_pytrends(geo: str) -> list[str]:
