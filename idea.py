@@ -60,9 +60,9 @@ def get_trending_candidates(geo: str = "SE") -> list[str]:
     """Gather trending topic candidates from all available sources."""
     candidates: list[str] = []
     sources = [
-        ("Google Trends", _trending_via_pytrends, (geo,)),
-        ("Reddit",        _trending_via_reddit,   ()),
-        ("Google RSS",    _trending_via_google_rss, (geo,)),
+        ("Google Trends", _trending_via_pytrends,    (geo,)),
+        ("Hacker News",   _trending_via_hackernews,  ()),
+        ("Google RSS",    _trending_via_google_rss,  (geo,)),
     ]
     for name, fn, args in sources:
         try:
@@ -122,25 +122,50 @@ def _trending_via_pytrends(geo: str) -> list[str]:
     return topics
 
 
-def _trending_via_reddit() -> list[str]:
-    url = "https://www.reddit.com/r/popular/hot.json?limit=10"
-    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0 Safari/537.36"}
-    resp = requests.get(url, headers=headers, timeout=10)
-    resp.raise_for_status()
-    posts = resp.json()["data"]["children"]
-    return [p["data"]["title"] for p in posts]
+def _trending_via_hackernews() -> list[str]:
+    """Fetch top story titles from the public Hacker News API (no auth required)."""
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    base = "https://hacker-news.firebaseio.com/v0"
+    ids_resp = requests.get(f"{base}/topstories.json", timeout=10)
+    ids_resp.raise_for_status()
+    top_ids: list[int] = ids_resp.json()[:10]
+
+    def _fetch_title(item_id: int) -> str | None:
+        r = requests.get(f"{base}/item/{item_id}.json", timeout=10)
+        r.raise_for_status()
+        return r.json().get("title")
+
+    titles: list[str] = []
+    with ThreadPoolExecutor(max_workers=5) as pool:
+        futures = {pool.submit(_fetch_title, i): i for i in top_ids}
+        for f in as_completed(futures):
+            try:
+                title = f.result()
+                if title:
+                    titles.append(title)
+            except Exception:
+                pass
+    return titles
 
 
 def _trending_via_google_rss(geo: str) -> list[str]:
     import xml.etree.ElementTree as ET
-    url = f"https://trends.google.com/trending/rss?geo={geo.upper()}"
-    resp = requests.get(url, timeout=10)
-    resp.raise_for_status()
-    root = ET.fromstring(resp.text)
-    titles = [el.text.strip() for el in root.findall(".//item/title") if el.text]
-    if not titles:
-        raise RuntimeError("No trending topics found in Google RSS feed")
-    return titles
+    # The older daily path is more stable; try it first before the newer /trending/rss
+    urls = [
+        f"https://trends.google.com/trends/trendingsearches/daily/rss?geo={geo.upper()}",
+        f"https://trends.google.com/trending/rss?geo={geo.upper()}",
+    ]
+    for url in urls:
+        try:
+            resp = requests.get(url, timeout=10)
+            resp.raise_for_status()
+            root = ET.fromstring(resp.text)
+            titles = [el.text.strip() for el in root.findall(".//item/title") if el.text]
+            if titles:
+                return titles
+        except Exception:
+            continue
+    raise RuntimeError("No trending topics found in Google RSS feed")
 
 
 # ── Script generation ─────────────────────────────────────────────────────────
