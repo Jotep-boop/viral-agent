@@ -42,18 +42,19 @@ Return ONLY valid JSON:
 }"""
 
 
-def get_trending_topic(geo: str = "SE") -> str:
+def get_trending_topic(geo: str = "SE", top_performers: list[dict] | None = None) -> str:
     """Return the best trending topic for a viral YouTube Short.
 
     Gathers candidates from multiple sources, then uses an LLM to score
     and select the one with the highest viral potential.
+    top_performers: previous high-view entries from tracker.get_top_performers().
     """
     candidates = get_trending_candidates(geo)
     if not candidates:
         raise RuntimeError("No trending candidates found from any source")
     if len(candidates) == 1:
         return candidates[0]
-    return score_and_select_topic(candidates)
+    return score_and_select_topic(candidates, top_performers or [])
 
 
 def get_trending_candidates(geo: str = "SE") -> list[str]:
@@ -86,7 +87,7 @@ def get_trending_candidates(geo: str = "SE") -> list[str]:
     return unique
 
 
-def score_and_select_topic(candidates: list[str]) -> str:
+def score_and_select_topic(candidates: list[str], top_performers: list[dict] | None = None) -> str:
     """Use LLM to pick the most viral-worthy topic from a list of candidates."""
     client = OpenAI(
         base_url="https://openrouter.ai/api/v1",
@@ -95,12 +96,20 @@ def score_and_select_topic(candidates: list[str]) -> str:
     numbered = "\n".join(f"{i + 1}. {t}" for i, t in enumerate(candidates))
     logger.info("Scoring %d candidates via LLM...", len(candidates))
 
+    user_content = f"Trending candidates:\n{numbered}"
+    if top_performers:
+        performers_text = "\n".join(
+            f'- "{p["topic"]}" — {p["views"]:,} views'
+            for p in top_performers
+        )
+        user_content += f"\n\nPrevious top performers on this channel:\n{performers_text}\nPrefer topics in a similar style or category to these proven performers."
+
     response = client.chat.completions.create(
         model=config.OPENROUTER_MODEL,
         max_tokens=256,
         messages=[
             {"role": "system", "content": _SCORING_PROMPT},
-            {"role": "user",   "content": f"Trending candidates:\n{numbered}"},
+            {"role": "user",   "content": user_content},
         ],
     )
 
