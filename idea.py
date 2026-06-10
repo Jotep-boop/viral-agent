@@ -15,6 +15,23 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
+class VideoIdea:
+    topic: str
+    angle: str           # specific hook angle, e.g. "the scariest thing about black holes isn't gravity"
+    format: str          # recommended format based on the angle
+    target_emotion: str  # "fear" | "surprise" | "curiosity" | "humor" | "awe"
+    viewer_question: str # the question the viewer is left asking, e.g. "wait, what IS it then?"
+
+
+@dataclass
+class VideoMetadata:
+    title: str          # click-optimised YouTube title (max 100 chars)
+    description: str    # full video description with context + hashtags
+    hashtags: list[str] # e.g. ["#shorts", "#science", "#facts"]
+    pinned_comment: str # first comment to pin, drives engagement
+
+
+@dataclass
 class Script:
     topic: str
     hook: str         # 0-3 sec
@@ -24,6 +41,109 @@ class Script:
     keywords: list[str]
     clips: list[dict] = field(default_factory=list)  # per-clip AI video prompts
     format: str = "informative"                       # which format produced this script
+
+
+# ── Idea generation ──────────────────────────────────────────────────────────
+
+_IDEA_PROMPT = """\
+You are a YouTube Shorts strategist. Given a topic, generate the best possible viral angle.
+
+Your job is NOT to describe the topic generally. Your job is to find the one specific angle
+that will make someone stop scrolling and watch. Think: surprising fact, counterintuitive truth,
+emotional hook, or jaw-dropping statistic.
+
+Return ONLY valid JSON:
+{
+  "angle": "the specific hook angle as a short punchy phrase",
+  "format": "one of: informative | top5 | quiz | story | mythbuster | scary | versus",
+  "target_emotion": "one of: fear | surprise | curiosity | humor | awe",
+  "viewer_question": "the question left unanswered in the viewer's head that makes them watch"
+}"""
+
+_METADATA_PROMPT = """\
+You are a YouTube SEO expert and viral title writer. Generate metadata for a YouTube Short.
+
+Rules for title:
+- Max 60 characters ideally (hard max 100)
+- Must create curiosity or urgency — never just state the topic
+- Use numbers, "you", "actually", "nobody talks about", "will shock you", "at night" etc when natural
+- No clickbait that lies — the video must deliver on the promise
+
+Return ONLY valid JSON:
+{
+  "title": "click-optimised YouTube title",
+  "description": "2-3 sentence description, includes main keywords, ends with hashtags on separate line",
+  "hashtags": ["#shorts", "#relevant", "#tags"],
+  "pinned_comment": "an engaging first comment that asks a question or shares a related fact to spark replies"
+}"""
+
+
+def generate_idea(topic: str, format_name: str | None = None) -> VideoIdea:
+    """Generate a specific viral angle for *topic* using LLM."""
+    client = OpenAI(
+        base_url="https://openrouter.ai/api/v1",
+        api_key=config.OPENROUTER_API_KEY,
+    )
+    user_msg = f"Topic: {topic}"
+    if format_name:
+        user_msg += f"\nPreferred format: {format_name} (suggest this unless a different format is clearly better)"
+
+    response = client.chat.completions.create(
+        model=config.OPENROUTER_MODEL,
+        max_tokens=256,
+        messages=[
+            {"role": "system", "content": _IDEA_PROMPT},
+            {"role": "user",   "content": user_msg},
+        ],
+    )
+    raw = response.choices[0].message.content.strip()
+    raw = re.sub(r"^```(?:json)?\s*", "", raw)
+    raw = re.sub(r"\s*```$", "", raw)
+    data: dict = json.loads(raw)
+
+    idea = VideoIdea(
+        topic=topic,
+        angle=data["angle"],
+        format=data.get("format", format_name or config.DEFAULT_FORMAT),
+        target_emotion=data.get("target_emotion", "curiosity"),
+        viewer_question=data.get("viewer_question", ""),
+    )
+    logger.info("VideoIdea — angle: %s | emotion: %s | format: %s",
+                idea.angle, idea.target_emotion, idea.format)
+    return idea
+
+
+def generate_metadata(script: "Script", idea: VideoIdea | None = None) -> VideoMetadata:
+    """Generate click-optimised YouTube metadata from a script and optional VideoIdea."""
+    client = OpenAI(
+        base_url="https://openrouter.ai/api/v1",
+        api_key=config.OPENROUTER_API_KEY,
+    )
+    context = f"Topic: {script.topic}\nScript hook: {script.hook}\nScript excerpt: {script.full_script[:300]}"
+    if idea:
+        context += f"\nAngle: {idea.angle}\nTarget emotion: {idea.target_emotion}"
+
+    response = client.chat.completions.create(
+        model=config.OPENROUTER_MODEL,
+        max_tokens=400,
+        messages=[
+            {"role": "system", "content": _METADATA_PROMPT},
+            {"role": "user",   "content": context},
+        ],
+    )
+    raw = response.choices[0].message.content.strip()
+    raw = re.sub(r"^```(?:json)?\s*", "", raw)
+    raw = re.sub(r"\s*```$", "", raw)
+    data: dict = json.loads(raw)
+
+    metadata = VideoMetadata(
+        title=data["title"][:100],
+        description=data.get("description", script.full_script[:500]),
+        hashtags=data.get("hashtags", ["#shorts"]),
+        pinned_comment=data.get("pinned_comment", ""),
+    )
+    logger.info("VideoMetadata — title: %s", metadata.title)
+    return metadata
 
 
 # ── Trending topic ────────────────────────────────────────────────────────────
@@ -202,12 +322,23 @@ def _trending_via_google_rss(geo: str) -> list[str]:
 
 # ── Script generation ─────────────────────────────────────────────────────────
 
-def generate_script(topic: str, format_name: str = "informative") -> Script:
-    """Call LLM via OpenRouter to generate a structured video script for *topic*.
+def generate_script(topic: "str | VideoIdea", format_name: str = "informative") -> Script:
+    """Call LLM via OpenRouter to generate a structured video script.
 
+    topic may be a plain string or a VideoIdea (angle + emotion used to guide the script).
     format_name selects the script structure — see formats.py for available options.
     """
     import formats as fmt
+
+    idea: VideoIdea | None = None
+    if isinstance(topic, VideoIdea):
+        idea = topic
+        if idea.format and idea.format != format_name:
+            format_name = idea.format
+        topic_str = idea.topic
+    else:
+        topic_str = topic
+
     format_def = fmt.get(format_name)
 
     client = OpenAI(
@@ -215,14 +346,22 @@ def generate_script(topic: str, format_name: str = "informative") -> Script:
         api_key=config.OPENROUTER_API_KEY,
     )
     logger.info("Generating script — topic: %s | format: %s | model: %s",
-                topic, format_name, config.OPENROUTER_MODEL)
+                topic_str, format_name, config.OPENROUTER_MODEL)
+
+    user_content = f"Topic: {topic_str}"
+    if idea:
+        user_content += (
+            f"\nAngle: {idea.angle}"
+            f"\nTarget emotion: {idea.target_emotion}"
+            f"\nViewer question to answer: {idea.viewer_question}"
+        )
 
     response = client.chat.completions.create(
         model=config.OPENROUTER_MODEL,
         max_tokens=600,
         messages=[
             {"role": "system", "content": format_def["system_prompt"]},
-            {"role": "user",   "content": f"Topic: {topic}"},
+            {"role": "user",   "content": user_content},
         ],
     )
 
@@ -233,9 +372,9 @@ def generate_script(topic: str, format_name: str = "informative") -> Script:
     data: dict = json.loads(raw)
     kwargs = format_def["parse"](data)
 
-    script = Script(topic=topic, format=format_name, **kwargs)
+    script = Script(topic=topic_str, format=format_name, **kwargs)
     if not script.keywords:
-        script.keywords = [topic]
+        script.keywords = [topic_str]
     logger.info("Script generated (%d words, format: %s).",
                 len(script.full_script.split()), format_name)
     return script

@@ -16,6 +16,76 @@ mcp = FastMCP("viral-agent")
 
 
 @mcp.tool()
+def generate_ideas(topic: str = "", count: int = 5) -> str:
+    """Generate and rank viral video ideas for a topic (or auto-detect trending topic).
+
+    Use this BEFORE generate_video to let you choose the best angle.
+    Returns ranked ideas — pick the one you like and pass its topic+angle to generate_video.
+
+    Args:
+        topic: The subject to build ideas around. If empty, auto-detects a trending topic.
+        count:  Number of idea variations to generate (default: 5, max: 10)
+
+    Returns:
+        JSON array of VideoIdea objects, each with:
+          topic, angle, format, target_emotion, viewer_question
+    """
+    try:
+        import config  # noqa
+        from idea import get_trending_topic as _get_topic, generate_idea as _gen_idea
+        import formats as fmt
+
+        if not topic:
+            topic = _get_topic()
+
+        available_formats = list(fmt.FORMATS.keys())
+        count = min(count, 10)
+        ideas = []
+        seen_angles: set[str] = set()
+
+        for i in range(count):
+            # Rotate through formats to get variety
+            format_hint = available_formats[i % len(available_formats)]
+            try:
+                idea = _gen_idea(topic, format_hint)
+                key = idea.angle.lower()[:50]
+                if key not in seen_angles:
+                    seen_angles.add(key)
+                    ideas.append({
+                        "topic": idea.topic,
+                        "angle": idea.angle,
+                        "format": idea.format,
+                        "target_emotion": idea.target_emotion,
+                        "viewer_question": idea.viewer_question,
+                    })
+            except Exception:
+                pass
+
+        return json.dumps(ideas)
+    except Exception as e:
+        return json.dumps({"error": str(e), "stage": "generate_ideas"})
+
+
+@mcp.tool()
+def get_performance_insights() -> str:
+    """Get performance insights from previous videos to inform content decisions.
+
+    Use this to understand which formats, hooks, and angles have performed best.
+    Returns format breakdown with avg views, like rates, and top-performing hooks.
+
+    Returns:
+        JSON with format_breakdown (avg views/rates per format),
+        top_hooks (hooks from best-performing videos),
+        overall_avg_views.
+    """
+    try:
+        import tracker
+        return json.dumps(tracker.get_performance_insights())
+    except Exception as e:
+        return json.dumps({"error": str(e), "stage": "performance_insights"})
+
+
+@mcp.tool()
 def get_trending_topic(geo: str = "SE") -> str:
     """Get a currently trending topic suitable for a viral video.
 
@@ -57,27 +127,30 @@ def list_formats() -> str:
 
 @mcp.tool()
 def generate_video(topic: str, format: str = "informative",
-                   dry_run: bool = True) -> str:
+                   angle: str = "", dry_run: bool = True) -> str:
     """Generate a viral short-form video from a topic.
 
-    Runs the full pipeline: script → TTS → AI video clips → assembly → captions.
-    Use list_formats() first to see available formats.
+    Runs the full pipeline: idea → script → TTS → AI video clips → assembly → captions.
+    Use generate_ideas() first to pick the best angle, or provide one directly.
+    Use list_formats() to see available formats.
 
     Args:
         topic:   The video topic (e.g. "black holes", "animal facts")
-        format:  Video format — "informative" (default) or "top5".
+        format:  Video format — "informative" (default) or "top5", "scary", etc.
                  Use list_formats() to see all options.
+        angle:   Optional specific angle from generate_ideas() to steer the script.
+                 If empty, the pipeline auto-generates the best angle.
         dry_run: If True, skip YouTube upload (default: True)
 
     Returns:
-        JSON with video_path, script, format, keywords, duration_seconds,
-        and optionally youtube_url.
+        JSON with video_path, title, script, angle, format, keywords,
+        duration_seconds, and optionally youtube_url.
     """
     try:
         import config
         config.validate_config(skip_youtube=dry_run)
 
-        from idea import generate_script
+        from idea import generate_idea, generate_script, generate_metadata, VideoIdea
         from voice import text_to_speech
         from video import fetch_footage, generate_footage_ai, assemble_video
         from captions import add_captions
@@ -85,7 +158,16 @@ def generate_video(topic: str, format: str = "informative",
         from datetime import datetime
         tag = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-        script = generate_script(topic, format_name=format)
+        # If caller provided a pre-chosen angle, build a VideoIdea stub; else auto-generate
+        if angle:
+            idea = VideoIdea(
+                topic=topic, angle=angle, format=format,
+                target_emotion="curiosity", viewer_question="",
+            )
+        else:
+            idea = generate_idea(topic, format)
+
+        script = generate_script(idea)
         audio = text_to_speech(script.full_script)
 
         if config.FAL_KEY and script.clips:
@@ -97,24 +179,42 @@ def generate_video(topic: str, format: str = "informative",
         final_video = add_captions(raw_video, audio, script_text=script.full_script,
                                     out_name=f"final_{tag}.mp4")
 
+        metadata = generate_metadata(script, idea)
         result = {
             "video_path": str(final_video.resolve()),
+            "title": metadata.title,
+            "angle": idea.angle,
             "script": script.full_script,
             "format": script.format,
             "keywords": script.keywords,
+            "hashtags": metadata.hashtags,
+            "pinned_comment": metadata.pinned_comment,
             "duration_seconds": _get_duration(final_video),
             "youtube_url": None,
         }
 
         if not dry_run:
             from publish import upload_to_youtube as _upload
+            import tracker
             url = _upload(
                 final_video,
-                title=script.topic,
-                description=script.full_script,
-                tags=script.keywords,
+                title=metadata.title,
+                description=metadata.description,
+                tags=script.keywords + metadata.hashtags,
             )
             result["youtube_url"] = url
+            try:
+                from urllib.parse import urlparse, parse_qs
+                video_id = parse_qs(urlparse(url).query).get("v", [None])[0]
+                if video_id:
+                    tracker.log_run(
+                        topic=script.topic, video_id=video_id, url=url,
+                        angle=idea.angle, format=script.format, hook=script.hook,
+                        word_count=len(script.full_script.split()),
+                        duration=result["duration_seconds"],
+                    )
+            except Exception:
+                pass
 
         return json.dumps(result)
     except Exception as e:
