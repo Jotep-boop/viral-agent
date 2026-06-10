@@ -108,7 +108,7 @@ def run_pipeline(topic: str | None, dry_run: bool,
 
     from idea import get_trending_topic, run_idea_tournament, generate_script, generate_metadata
     from voice import text_to_speech
-    from video import fetch_footage, generate_footage_ai, assemble_video
+    from video import generate_footage_ai, assemble_video
     from captions import add_captions
     import tracker
     if not dry_run:
@@ -162,11 +162,18 @@ def run_pipeline(topic: str | None, dry_run: bool,
             if not ok_clips:
                 logger.warning("Clip prompts still failing: %s — continuing anyway.", clip_issues)
 
-    # 5. Footage — AI-generated (fal.ai) when available, else Pexels stock
-    if config.FAL_KEY and script.clips:
-        clips: list[Path] = _run_stage("Generate AI footage", generate_footage_ai, script.clips)
-    else:
-        clips = _run_stage("Fetch stock footage", fetch_footage, script.keywords)
+    # 5. Footage — AI-generated via fal.ai (required)
+    if not config.FAL_KEY:
+        raise RuntimeError(
+            "FAL_KEY is not set. AI footage generation is required — "
+            "add FAL_KEY to your .env file."
+        )
+    if not script.clips:
+        raise RuntimeError(
+            "Script contains no clip prompts. "
+            "Re-run or check the format prompt for clip generation."
+        )
+    clips: list[Path] = _run_stage("Generate AI footage", generate_footage_ai, script.clips)
     raw_video: Path = _run_stage("Assemble video", assemble_video, clips, audio,
                                   out_name=f"raw_{tag}.mp4")
 
