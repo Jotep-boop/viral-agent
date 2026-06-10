@@ -132,7 +132,7 @@ def generate_video(topic: str, format: str = "informative",
 
         from idea import generate_idea, generate_script, generate_metadata, VideoIdea
         from voice import text_to_speech
-        from video import fetch_footage, generate_footage_ai, assemble_video
+        from video import generate_footage_ai, assemble_video
         from captions import add_captions
 
         from datetime import datetime
@@ -150,10 +150,9 @@ def generate_video(topic: str, format: str = "informative",
         script = generate_script(idea)
         audio = text_to_speech(script.full_script)
 
-        if config.FAL_KEY and script.clips:
-            clips = generate_footage_ai(script.clips)
-        else:
-            clips = fetch_footage(script.keywords)
+        if not config.FAL_KEY:
+            return json.dumps({"error": "FAL_KEY not configured", "stage": "footage"})
+        clips = generate_footage_ai(script.clips)
 
         raw_video = assemble_video(clips, audio, out_name=f"raw_{tag}.mp4")
         final_video = add_captions(raw_video, audio, script_text=script.full_script,

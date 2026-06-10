@@ -43,7 +43,7 @@ def validate_config(skip_youtube: bool = False) -> None:
     required = {
         "OPENROUTER_API_KEY": OPENROUTER_API_KEY,
         "ELEVENLABS_API_KEY": ELEVENLABS_API_KEY,
-        "PEXELS_API_KEY": PEXELS_API_KEY,
+        "FAL_KEY": FAL_KEY,
     }
     if not skip_youtube:
         required["YOUTUBE_CLIENT_SECRETS (file must exist)"] = (
