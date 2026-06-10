@@ -61,10 +61,17 @@ from __future__ import annotations
 # ── Shared clip instructions (appended to every prompt) ───────────────────────
 
 _CLIP_RULES = """\
-clips: Generate one clip per major script beat (4-6 total). Each prompt must be
-SPECIFIC and visual — direct like a film: "a wide-eyed golden retriever slowly
-turning its head toward the camera in disbelief" not "surprised dog". Portrait
-9:16 format. Duration 4-6 seconds each. Match the emotional tone of the script beat.\
+clips: Generate one clip per major script beat (4-6 total).
+CRITICAL — clip rules:
+1. The FIRST clip MUST show the core claim/payoff visually. If the topic is
+   "platypuses glow under UV light", clip 1 shows the glowing fur — NOT a lab setup.
+   Start with the most surprising visual, not the background.
+2. Every clip must be UNIQUE — no two clips of the same type (e.g. not 3x "scientist
+   in lab"). Each clip should show a different visual angle or scene.
+3. Prompts must be SPECIFIC and film-directed: "a platypus's brown fur glowing
+   electric blue-green under ultraviolet light in a dark lab" not "glowing animal".
+4. Portrait 9:16 format. Duration 4-6 seconds each.
+5. Match the emotional tone of the script beat.\
 """
 
 # ── Prompts ───────────────────────────────────────────────────────────────────
@@ -80,8 +87,11 @@ Create a "did you know" style voiceover with mind-blowing facts. Focus on:
 
 RULES:
 1. Universal appeal — no local news, regional events, or place names.
-2. Voiceover only — NEVER reference visuals on screen.
+2. Voiceover only — NEVER reference visuals on screen ("look at this", "see here", etc.).
 3. Total script 80-100 words. Fast-paced narration.
+4. START WITH THE SURPRISING FACT — never open with background the viewer already knows
+   ("X is a weird animal" / "Everyone knows X" / "Did you know"). Drop them into the
+   payoff on word one. Save the "why/how" for after you've hooked them.
 
 Return ONLY valid JSON:
 {{
@@ -111,8 +121,9 @@ Total script 90-110 words. Each item must be punchy and concise.
 
 RULES:
 1. Universal appeal — no local news or regional events.
-2. Voiceover only — never reference visuals on screen.
+2. Voiceover only — NEVER reference visuals on screen.
 3. Number 1 must feel like a satisfying climax.
+4. Hook must tease the payoff — don't open with "did you know" or generic setup.
 
 Return ONLY valid JSON:
 {{
@@ -228,8 +239,9 @@ Structure:
 
 RULES:
 1. The myth must be genuinely widely believed. The truth must be genuinely surprising.
-2. Voiceover only — never reference visuals on screen.
+2. Voiceover only — NEVER reference visuals on screen.
 3. Total script 80-100 words.
+4. State the myth with conviction on word one — no "did you know" preamble.
 
 Return ONLY valid JSON:
 {{
@@ -268,8 +280,9 @@ Structure:
 
 RULES:
 1. Facts must be real or scientifically plausible. No gore or graphic violence.
-2. Voiceover only — never reference visuals on screen.
+2. Voiceover only — NEVER reference visuals on screen.
 3. Total script 80-100 words. Slow delivery implied — shorter is fine.
+4. Open with the most unsettling fact immediately — don't warm up with context.
 
 Return ONLY valid JSON:
 {{
@@ -305,8 +318,9 @@ Structure:
 
 RULES:
 1. The winner should be surprising — subvert expectations.
-2. Voiceover only — never reference visuals on screen.
+2. Voiceover only — NEVER reference visuals on screen.
 3. Total script 80-100 words. Keep each round punchy (1-2 sentences).
+4. Hook must set up a genuine "wait, who wins?" tension from the first word.
 
 Return ONLY valid JSON:
 {{

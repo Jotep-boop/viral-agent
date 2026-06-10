@@ -11,9 +11,9 @@ import config
 
 logger = logging.getLogger(__name__)
 
-_CHUNK_SIZE = 3           # words shown per caption group
+_CHUNK_SIZE = 2           # words shown per caption group (fewer = more readable)
 _HIGHLIGHT  = "&H0000FFFF&"  # yellow in ASS BGR format
-_FONT_SIZE  = 65
+_FONT_SIZE  = 72
 
 
 def _ffmpeg_bin() -> str:
@@ -120,7 +120,7 @@ def _write_ass_karaoke(words: list[dict], out_path: Path) -> None:
         "ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
         "Alignment, MarginL, MarginR, MarginV, Encoding\n"
         f"Style: Default,Arial,{_FONT_SIZE},&H00FFFFFF,&H000000FF,"
-        "&H00000000,&H80000000,0,0,0,0,100,100,2,0,1,3,2,2,40,40,120,1\n\n"
+        f"&H00000000,&H80000000,0,0,0,0,100,100,2,0,1,4,3,2,40,40,{int(config.VIDEO_HEIGHT * 0.28)},1\n\n"
         "[Events]\n"
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
     )

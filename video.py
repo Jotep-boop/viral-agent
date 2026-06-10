@@ -138,12 +138,13 @@ def assemble_video(clips: list[Path], audio: Path, out_name: str = "raw.mp4") ->
             f.write(f"file '{p.resolve()}'\n")
         concat_list = Path(f.name)
 
-    # Concat + add audio
+    # Concat + add audio with loudness normalisation (-14 LUFS for Shorts)
     cmd = [
         _ffmpeg_bin(), "-y",
         "-f", "concat", "-safe", "0", "-i", str(concat_list),
         "-i", str(audio),
         "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+        "-af", "loudnorm=I=-14:TP=-1.5:LRA=11",
         "-c:a", "aac", "-b:a", "128k",
         "-shortest",
         str(out_path),
