@@ -78,13 +78,35 @@ def _check_quality(script, duration: float) -> tuple[bool, list[str]]:
     return not issues, issues
 
 
+def _check_clip_prompts(idea, clips: list[dict]) -> tuple[bool, list[str]]:
+    """Verify clip prompts before sending to fal.ai — saves money on bad generations."""
+    issues = []
+    if not clips:
+        return True, []
+
+    # First clip should visually show the core claim
+    first_prompt = clips[0]["prompt"].lower()
+    key_terms = [t for t in idea.angle.lower().split() if len(t) > 4]
+    if key_terms and not any(term in first_prompt for term in key_terms):
+        issues.append(f"first clip doesn't reference core claim: '{idea.angle[:50]}'")
+
+    # No repeated clip archetypes (e.g. "scientist in lab" × 3)
+    bad_patterns = ["scientist", "in a lab", "looking shocked", "holding a", "looking at camera"]
+    for pattern in bad_patterns:
+        count = sum(1 for c in clips if pattern in c["prompt"].lower())
+        if count >= 3:
+            issues.append(f"repeated clip archetype '{pattern}' appears {count}×")
+
+    return not issues, issues
+
+
 def run_pipeline(topic: str | None, dry_run: bool,
                   video_format: str | None = None) -> None:
     import config
     config.validate_config(skip_youtube=dry_run)
     video_format = video_format or config.DEFAULT_FORMAT
 
-    from idea import get_trending_topic, generate_idea, generate_script, generate_metadata
+    from idea import get_trending_topic, run_idea_tournament, generate_script, generate_metadata
     from voice import text_to_speech
     from video import fetch_footage, generate_footage_ai, assemble_video
     from captions import add_captions
@@ -102,11 +124,12 @@ def run_pipeline(topic: str | None, dry_run: bool,
     if top_performers:
         logger.info("Top performers loaded: %s", [p["topic"] for p in top_performers])
 
-    # 1. Topic → Idea → Script
+    # 1. Topic → Idea tournament → Script
     if not topic:
         topic = _run_stage("Get trending topic", get_trending_topic,
                            top_performers=top_performers)
-    idea = _run_stage("Generate idea", generate_idea, topic, video_format)
+    idea, _candidates = _run_stage("Idea tournament", run_idea_tournament,
+                                    topic, video_format)
     script = _run_stage("Generate script", generate_script, idea)
 
     logger.info("Script preview:\n%s", script.full_script[:200])
@@ -129,7 +152,17 @@ def run_pipeline(topic: str | None, dry_run: bool,
         if not ok:
             logger.warning("Quality gate still failing after retry: %s — continuing anyway.", issues)
 
-    # 4. Footage — AI-generated (fal.ai) when available, else Pexels stock
+    # 4. Clip-prompt quality gate (before paying for fal.ai)
+    if script.clips:
+        ok_clips, clip_issues = _check_clip_prompts(idea, script.clips)
+        if not ok_clips:
+            logger.warning("Clip prompt gate FAILED: %s — retrying script once.", clip_issues)
+            script = _run_stage("Generate script (clip retry)", generate_script, idea)
+            ok_clips, clip_issues = _check_clip_prompts(idea, script.clips)
+            if not ok_clips:
+                logger.warning("Clip prompts still failing: %s — continuing anyway.", clip_issues)
+
+    # 5. Footage — AI-generated (fal.ai) when available, else Pexels stock
     if config.FAL_KEY and script.clips:
         clips: list[Path] = _run_stage("Generate AI footage", generate_footage_ai, script.clips)
     else:
@@ -137,12 +170,13 @@ def run_pipeline(topic: str | None, dry_run: bool,
     raw_video: Path = _run_stage("Assemble video", assemble_video, clips, audio,
                                   out_name=f"raw_{tag}.mp4")
 
-    # 5. Captions
+    # 6. Captions (with emphasis word highlighting)
     final_video: Path = _run_stage("Add captions", add_captions, raw_video, audio,
                                     script_text=script.full_script,
-                                    out_name=f"final_{tag}.mp4")
+                                    out_name=f"final_{tag}.mp4",
+                                    emphasis_words=script.emphasis_words)
 
-    # 6. Publish (skipped in dry-run)
+    # 7. Publish (skipped in dry-run)
     if dry_run:
         logger.info("DRY RUN complete. Final video: %s", final_video)
         print(f"\nDry run complete!\nVideo saved to: {final_video.resolve()}")

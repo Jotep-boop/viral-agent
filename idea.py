@@ -39,8 +39,9 @@ class Script:
     cta: str          # 25-30 sec
     full_script: str
     keywords: list[str]
-    clips: list[dict] = field(default_factory=list)  # per-clip AI video prompts
-    format: str = "informative"                       # which format produced this script
+    clips: list[dict] = field(default_factory=list)       # per-clip AI video prompts
+    format: str = "informative"                            # which format produced this script
+    emphasis_words: list[str] = field(default_factory=list)  # words to highlight in captions
 
 
 # ── Idea generation ──────────────────────────────────────────────────────────
@@ -76,6 +77,152 @@ Return ONLY valid JSON:
   "hashtags": ["#shorts", "#relevant", "#tags"],
   "pinned_comment": "an engaging first comment that asks a question or shares a related fact to spark replies"
 }"""
+
+
+_IDEA_BATCH_PROMPT = """\
+You are a YouTube Shorts strategist. Generate {count} DIFFERENT viral angle ideas for the given topic.
+
+Rules:
+- Vary the format across the list (informative, scary, quiz, story, mythbuster, versus, top5)
+- Vary the emotional angle — some curious, some scary, some surprising, some humorous
+- Every angle must be UNIQUE — different hook, different framing
+- Each angle must be a short punchy phrase that could work as the opening sentence
+
+Return ONLY a valid JSON array of exactly {count} objects:
+[
+  {{
+    "angle": "specific punchy hook phrase",
+    "format": "informative|top5|quiz|story|mythbuster|scary|versus",
+    "target_emotion": "fear|surprise|curiosity|humor|awe",
+    "viewer_question": "question left in viewer's head"
+  }}
+]"""
+
+_IDEA_SCORING_PROMPT = """\
+You are a viral content analyst scoring YouTube Shorts ideas.
+
+Score each idea 0-100 on these criteria (equal weight):
+1. hook_strength — how scroll-stopping in the first 3 seconds?
+2. curiosity_gap — does it leave a burning unanswered question?
+3. visual_payoff — can the FIRST clip show the core claim directly (not context)?
+4. comment_potential — will people argue, react, or comment their answer?
+5. evergreen_value — will it work in 6 months (not tied to a breaking news moment)?
+
+Return ONLY valid JSON:
+{
+  "scores": [
+    {"index": 0, "total": 87, "reason": "one sentence why"},
+    ...
+  ],
+  "winner": 3
+}"""
+
+_CANDIDATES_LOG = None  # initialised lazily
+
+
+def _candidates_log_path():
+    return config.OUTPUT_DIR / "idea_candidates.jsonl"
+
+
+def _log_candidates(candidates: list[dict]) -> None:
+    import time as _time
+    path = _candidates_log_path()
+    ts = __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat()
+    with path.open("a", encoding="utf-8") as f:
+        for c in candidates:
+            f.write(json.dumps({**c, "logged_at": ts}) + "\n")
+
+
+def run_idea_tournament(
+    topic: str,
+    format_name: str | None = None,
+    count: int = 10,
+) -> tuple[VideoIdea, list[dict]]:
+    """Generate *count* angles, score them all, return (winner VideoIdea, all candidates).
+
+    Candidates are also appended to output/idea_candidates.jsonl for debugging.
+    """
+    client = OpenAI(
+        base_url="https://openrouter.ai/api/v1",
+        api_key=config.OPENROUTER_API_KEY,
+    )
+    count = max(2, min(count, 15))
+    logger.info("Idea tournament: generating %d candidates for '%s'", count, topic)
+
+    # Step 1 — batch-generate ideas
+    batch_prompt = _IDEA_BATCH_PROMPT.format(count=count)
+    user_msg = f"Topic: {topic}"
+    if format_name:
+        user_msg += f"\nPreferred format hint: {format_name}"
+
+    raw = client.chat.completions.create(
+        model=config.OPENROUTER_MODEL,
+        max_tokens=1200,
+        messages=[
+            {"role": "system", "content": batch_prompt},
+            {"role": "user",   "content": user_msg},
+        ],
+    ).choices[0].message.content.strip()
+    raw = re.sub(r"^```(?:json)?\s*", "", raw)
+    raw = re.sub(r"\s*```$", "", raw)
+    ideas_data: list[dict] = json.loads(raw)
+    if not isinstance(ideas_data, list) or not ideas_data:
+        raise RuntimeError("Batch idea generation returned empty list")
+
+    # Step 2 — score all ideas
+    numbered = "\n".join(
+        f"{i}. [{d.get('format','?')} / {d.get('target_emotion','?')}] {d['angle']}"
+        for i, d in enumerate(ideas_data)
+    )
+    score_raw = client.chat.completions.create(
+        model=config.OPENROUTER_MODEL,
+        max_tokens=800,
+        messages=[
+            {"role": "system", "content": _IDEA_SCORING_PROMPT},
+            {"role": "user",   "content": f"Topic: {topic}\n\nIdeas:\n{numbered}"},
+        ],
+    ).choices[0].message.content.strip()
+    score_raw = re.sub(r"^```(?:json)?\s*", "", score_raw)
+    score_raw = re.sub(r"\s*```$", "", score_raw)
+    score_data: dict = json.loads(score_raw)
+
+    scores_by_index = {s["index"]: s for s in score_data.get("scores", [])}
+    winner_idx = int(score_data.get("winner", 0))
+    winner_idx = max(0, min(winner_idx, len(ideas_data) - 1))
+
+    # Step 3 — build candidates list
+    candidates: list[dict] = []
+    for i, d in enumerate(ideas_data):
+        sc = scores_by_index.get(i, {})
+        candidates.append({
+            "topic": topic,
+            "angle": d.get("angle", ""),
+            "format": d.get("format", format_name or config.DEFAULT_FORMAT),
+            "target_emotion": d.get("target_emotion", "curiosity"),
+            "viewer_question": d.get("viewer_question", ""),
+            "score": sc.get("total", 0),
+            "reason": sc.get("reason", ""),
+            "winner": i == winner_idx,
+        })
+
+    try:
+        _log_candidates(candidates)
+    except Exception as exc:
+        logger.warning("Could not log idea candidates: %s", exc)
+
+    winner_data = ideas_data[winner_idx]
+    winner = VideoIdea(
+        topic=topic,
+        angle=winner_data["angle"],
+        format=winner_data.get("format", format_name or config.DEFAULT_FORMAT),
+        target_emotion=winner_data.get("target_emotion", "curiosity"),
+        viewer_question=winner_data.get("viewer_question", ""),
+    )
+    logger.info(
+        "Tournament winner (score %s): %s [%s]",
+        candidates[winner_idx]["score"], winner.angle, winner.format,
+    )
+    return winner, candidates
 
 
 def generate_idea(topic: str, format_name: str | None = None) -> VideoIdea:

@@ -100,6 +100,7 @@ Return ONLY valid JSON:
   "cta": "Call to action (last 5 seconds)",
   "full_script": "Complete script as one block",
   "keywords": ["fallback1", "fallback2", "fallback3"],
+  "emphasis_words": ["word1", "word2", "word3"],
   "clips": [
     {{"prompt": "...", "duration": 5}},
     {{"prompt": "...", "duration": 5}},
@@ -108,6 +109,7 @@ Return ONLY valid JSON:
   ]
 }}
 keywords: generic English terms for stock footage fallback, no place names.
+emphasis_words: 3-6 single words from the script that are most surprising or important — these will be highlighted in a different colour in the captions.
 {_CLIP_RULES}\
 """
 
@@ -138,6 +140,7 @@ Return ONLY valid JSON:
   "cta": "Closing call to action",
   "full_script": "Complete script with 'Number 5:' etc. as one block",
   "keywords": ["fallback1", "fallback2", "fallback3"],
+  "emphasis_words": ["word1", "word2", "word3"],
   "clips": [
     {{"prompt": "scene matching item 5, portrait 9:16", "duration": 5}},
     {{"prompt": "scene matching item 4", "duration": 5}},
@@ -146,6 +149,7 @@ Return ONLY valid JSON:
     {{"prompt": "most dramatic scene for the Number 1 reveal", "duration": 6}}
   ]
 }}
+emphasis_words: 3-6 most surprising/important words from the script for caption highlighting.
 {_CLIP_RULES}\
 """
 
@@ -176,6 +180,7 @@ Return ONLY valid JSON:
   "cta": "Follow + were you right?",
   "full_script": "Complete script as one block",
   "keywords": ["fallback1", "fallback2", "fallback3"],
+  "emphasis_words": ["word1", "word2", "word3"],
   "clips": [
     {{"prompt": "intriguing scene setting up the question, portrait 9:16", "duration": 5}},
     {{"prompt": "thinking/suspense scene during the pause beat", "duration": 4}},
@@ -183,6 +188,7 @@ Return ONLY valid JSON:
     {{"prompt": "celebratory or mind-blown reaction scene", "duration": 4}}
   ]
 }}
+emphasis_words: 3-6 most surprising/important words from the script for caption highlighting.
 {_CLIP_RULES}\
 """
 
@@ -213,6 +219,7 @@ Return ONLY valid JSON:
   "cta": "Call to action",
   "full_script": "Complete story as one block",
   "keywords": ["fallback1", "fallback2", "fallback3"],
+  "emphasis_words": ["word1", "word2", "word3"],
   "clips": [
     {{"prompt": "cinematic establishing shot matching the story setting, portrait 9:16", "duration": 5}},
     {{"prompt": "tense/dramatic scene matching the conflict", "duration": 5}},
@@ -220,6 +227,7 @@ Return ONLY valid JSON:
     {{"prompt": "resolution scene — relief, wonder, or awe", "duration": 5}}
   ]
 }}
+emphasis_words: 3-6 most surprising/important words from the script for caption highlighting.
 {_CLIP_RULES}\
 """
 
@@ -253,6 +261,7 @@ Return ONLY valid JSON:
   "cta": "Follow for more myths debunked",
   "full_script": "Complete script as one block",
   "keywords": ["fallback1", "fallback2", "fallback3"],
+  "emphasis_words": ["word1", "word2", "word3"],
   "clips": [
     {{"prompt": "confident person stating something wrong, portrait 9:16", "duration": 4}},
     {{"prompt": "dramatic 'plot twist' / mind blown moment", "duration": 4}},
@@ -260,6 +269,7 @@ Return ONLY valid JSON:
     {{"prompt": "awe or disbelief reaction scene", "duration": 4}}
   ]
 }}
+emphasis_words: 3-6 most surprising/important words from the script for caption highlighting.
 {_CLIP_RULES}\
 """
 
@@ -292,6 +302,7 @@ Return ONLY valid JSON:
   "cta": "Follow if you dare",
   "full_script": "Complete script as one block",
   "keywords": ["fallback1", "fallback2", "fallback3"],
+  "emphasis_words": ["word1", "word2", "word3"],
   "clips": [
     {{"prompt": "dark, eerie establishing scene matching the topic, portrait 9:16", "duration": 5}},
     {{"prompt": "unsettling visual — deep dark water / vast empty space / microscopic horror", "duration": 5}},
@@ -299,6 +310,7 @@ Return ONLY valid JSON:
     {{"prompt": "final dark, haunting image — slow zoom, dim lighting", "duration": 6}}
   ]
 }}
+emphasis_words: 3-6 most chilling/important words from the script for caption highlighting.
 {_CLIP_RULES}\
 """
 
@@ -334,6 +346,7 @@ Return ONLY valid JSON:
   "cta": "Follow for more versus battles",
   "full_script": "Complete script as one block",
   "keywords": ["fallback1", "fallback2", "fallback3"],
+  "emphasis_words": ["word1", "word2", "word3"],
   "clips": [
     {{"prompt": "visual representing X (left competitor), portrait 9:16", "duration": 4}},
     {{"prompt": "visual representing Y (right competitor)", "duration": 4}},
@@ -341,21 +354,28 @@ Return ONLY valid JSON:
     {{"prompt": "winner celebration / dramatic victory moment", "duration": 5}}
   ]
 }}
+emphasis_words: 3-6 most surprising/important words from the script for caption highlighting.
 {_CLIP_RULES}\
 """
 
 
 # ── Parsers ───────────────────────────────────────────────────────────────────
 
+def _ew(data: dict) -> list[str]:
+    """Extract emphasis_words from parsed data, normalised to lowercase."""
+    return [w.lower().strip(".,!?") for w in data.get("emphasis_words", []) if w.strip()]
+
+
 def _parse_simple(data: dict) -> dict:
     """Default parser — works for formats whose JSON maps directly to hook/core/cta."""
     return {
-        "hook":        data["hook"],
-        "core":        data.get("core", ""),
-        "cta":         data["cta"],
-        "full_script": data["full_script"],
-        "keywords":    data.get("keywords", []),
-        "clips":       data.get("clips", []),
+        "hook":           data["hook"],
+        "core":           data.get("core", ""),
+        "cta":            data["cta"],
+        "full_script":    data["full_script"],
+        "keywords":       data.get("keywords", []),
+        "clips":          data.get("clips", []),
+        "emphasis_words": _ew(data),
     }
 
 
@@ -366,6 +386,7 @@ def _parse_top5(data: dict) -> dict:
         "hook": data["hook"], "core": core, "cta": data["cta"],
         "full_script": data["full_script"],
         "keywords": data.get("keywords", []), "clips": data.get("clips", []),
+        "emphasis_words": _ew(data),
     }
 
 
@@ -377,6 +398,7 @@ def _parse_quiz(data: dict) -> dict:
         "hook": data["hook"], "core": core, "cta": data["cta"],
         "full_script": data["full_script"],
         "keywords": data.get("keywords", []), "clips": data.get("clips", []),
+        "emphasis_words": _ew(data),
     }
 
 
@@ -388,6 +410,7 @@ def _parse_story(data: dict) -> dict:
         "hook": data["hook"], "core": core, "cta": data["cta"],
         "full_script": data["full_script"],
         "keywords": data.get("keywords", []), "clips": data.get("clips", []),
+        "emphasis_words": _ew(data),
     }
 
 
@@ -400,6 +423,7 @@ def _parse_mythbuster(data: dict) -> dict:
         "hook": data["hook"], "core": core, "cta": data["cta"],
         "full_script": data["full_script"],
         "keywords": data.get("keywords", []), "clips": data.get("clips", []),
+        "emphasis_words": _ew(data),
     }
 
 
@@ -410,6 +434,7 @@ def _parse_scary(data: dict) -> dict:
         "hook": data["hook"], "core": core.strip(), "cta": data["cta"],
         "full_script": data["full_script"],
         "keywords": data.get("keywords", []), "clips": data.get("clips", []),
+        "emphasis_words": _ew(data),
     }
 
 
@@ -420,6 +445,7 @@ def _parse_versus(data: dict) -> dict:
         "hook": data["hook"], "core": core.strip(), "cta": data["cta"],
         "full_script": data["full_script"],
         "keywords": data.get("keywords", []), "clips": data.get("clips", []),
+        "emphasis_words": _ew(data),
     }
 
 
