@@ -66,6 +66,15 @@ def _check_quality(script, duration: float) -> tuple[bool, list[str]]:
     for phrase in ["look at", "see this", "watch this", "as you can see"]:
         if phrase in script.full_script.lower():
             issues.append(f"visual reference: '{phrase}'")
+    # Reject generic openers that bury the payoff
+    _generic_openers = [
+        "everyone knows", "did you know", "you probably know",
+        "as you know", "most people know", "we all know",
+    ]
+    hook_lower = script.hook.lower()
+    for opener in _generic_openers:
+        if hook_lower.startswith(opener):
+            issues.append(f"generic opener: '{opener}' — payoff must come first")
     return not issues, issues
 
 
