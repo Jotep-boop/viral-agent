@@ -32,36 +32,16 @@ def generate_ideas(topic: str = "", count: int = 5) -> str:
     """
     try:
         import config  # noqa
-        from idea import get_trending_topic as _get_topic, generate_idea as _gen_idea
-        import formats as fmt
+        from idea import get_trending_topic as _get_topic, run_idea_tournament
 
         if not topic:
             topic = _get_topic()
 
-        available_formats = list(fmt.FORMATS.keys())
         count = min(count, 10)
-        ideas = []
-        seen_angles: set[str] = set()
-
-        for i in range(count):
-            # Rotate through formats to get variety
-            format_hint = available_formats[i % len(available_formats)]
-            try:
-                idea = _gen_idea(topic, format_hint)
-                key = idea.angle.lower()[:50]
-                if key not in seen_angles:
-                    seen_angles.add(key)
-                    ideas.append({
-                        "topic": idea.topic,
-                        "angle": idea.angle,
-                        "format": idea.format,
-                        "target_emotion": idea.target_emotion,
-                        "viewer_question": idea.viewer_question,
-                    })
-            except Exception:
-                pass
-
-        return json.dumps(ideas)
+        _winner, candidates = run_idea_tournament(topic, count=count)
+        # Sort by score descending so Hermes sees the best first
+        candidates_sorted = sorted(candidates, key=lambda c: c.get("score", 0), reverse=True)
+        return json.dumps(candidates_sorted)
     except Exception as e:
         return json.dumps({"error": str(e), "stage": "generate_ideas"})
 
@@ -177,7 +157,8 @@ def generate_video(topic: str, format: str = "informative",
 
         raw_video = assemble_video(clips, audio, out_name=f"raw_{tag}.mp4")
         final_video = add_captions(raw_video, audio, script_text=script.full_script,
-                                    out_name=f"final_{tag}.mp4")
+                                    out_name=f"final_{tag}.mp4",
+                                    emphasis_words=script.emphasis_words)
 
         metadata = generate_metadata(script, idea)
         result = {

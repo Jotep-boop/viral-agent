@@ -11,8 +11,9 @@ import config
 
 logger = logging.getLogger(__name__)
 
-_CHUNK_SIZE = 2           # words shown per caption group (fewer = more readable)
-_HIGHLIGHT  = "&H0000FFFF&"  # yellow in ASS BGR format
+_CHUNK_SIZE = 2              # words shown per caption group (fewer = more readable)
+_HIGHLIGHT  = "&H0000FFFF&"  # yellow in ASS BGR format (active word)
+_EMPHASIS   = "&H000080FF&"  # orange in ASS BGR format (emphasis/keyword word)
 _FONT_SIZE  = 72
 
 
@@ -27,15 +28,21 @@ def _ffmpeg_bin() -> str:
 
 
 def add_captions(video: Path, audio: Path, script_text: str = "",
-                  out_name: str = "final.mp4") -> Path:
-    """Burn karaoke-style captions into *video* with per-word yellow highlighting."""
+                  out_name: str = "final.mp4",
+                  emphasis_words: list[str] | None = None) -> Path:
+    """Burn karaoke-style captions into *video* with per-word colour highlighting.
+
+    Active words are highlighted yellow; words in *emphasis_words* are highlighted
+    orange so key terms stand out even more.
+    """
     out_path = config.OUTPUT_DIR / "videos" / out_name
 
     logger.info("Transcribing audio with Whisper (%s)...", config.WHISPER_MODEL)
     words = _transcribe_words(audio, script_text)
 
     ass_path = audio.with_suffix(".ass")
-    _write_ass_karaoke(words, ass_path)
+    em_set = {w.lower().strip(".,!?") for w in (emphasis_words or [])}
+    _write_ass_karaoke(words, ass_path, emphasis=em_set)
 
     logger.info("Burning karaoke captions into video...")
     _burn_captions(video, ass_path, out_path)
@@ -88,13 +95,14 @@ def _transcribe_words(audio: Path, script_text: str = "") -> list[dict]:
     return aligned
 
 
-def _write_ass_karaoke(words: list[dict], out_path: Path) -> None:
+def _write_ass_karaoke(words: list[dict], out_path: Path,
+                        emphasis: set[str] | None = None) -> None:
     """Generate an ASS subtitle file with karaoke-style per-word colour highlighting.
 
-    Words are grouped into chunks of _CHUNK_SIZE. For each word in a chunk
-    one subtitle event is emitted: the active word is yellow+bold, the
-    surrounding words stay white so the viewer always sees context.
+    Active word → yellow. Active word AND in emphasis set → orange.
+    Inactive words → white (style default).
     """
+    em = emphasis or set()
     events: list[tuple[float, float, str]] = []
 
     for chunk_start in range(0, len(words), _CHUNK_SIZE):
@@ -103,7 +111,8 @@ def _write_ass_karaoke(words: list[dict], out_path: Path) -> None:
             parts = []
             for j, w in enumerate(chunk):
                 if j == active_i:
-                    parts.append(f"{{\\c{_HIGHLIGHT}\\b1}}{w['word']}{{\\r}}")
+                    colour = _EMPHASIS if w["word"].lower().strip(".,!?") in em else _HIGHLIGHT
+                    parts.append(f"{{\\c{colour}\\b1}}{w['word']}{{\\r}}")
                 else:
                     parts.append(w["word"])
             events.append((active_word["start"], active_word["end"], " ".join(parts)))
