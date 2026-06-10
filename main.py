@@ -41,13 +41,41 @@ def _run_stage(name: str, fn, *args, **kwargs):
         raise
 
 
+def _get_audio_duration(audio_path: Path) -> float:
+    """Return audio duration in seconds using ffprobe."""
+    import subprocess, re as _re
+    result = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+         "-of", "default=noprint_wrappers=1:nokey=1", str(audio_path)],
+        capture_output=True, text=True,
+    )
+    try:
+        return float(result.stdout.strip())
+    except ValueError:
+        return 0.0
+
+
+def _check_quality(script, duration: float) -> tuple[bool, list[str]]:
+    """Return (ok, issues) for a script+duration pair."""
+    issues = []
+    wc = len(script.full_script.split())
+    if not 60 <= wc <= 115:
+        issues.append(f"word_count {wc} out of range 60-115")
+    if not 20 <= duration <= 55:
+        issues.append(f"duration {duration:.1f}s out of range 20-55s")
+    for phrase in ["look at", "see this", "watch this", "as you can see"]:
+        if phrase in script.full_script.lower():
+            issues.append(f"visual reference: '{phrase}'")
+    return not issues, issues
+
+
 def run_pipeline(topic: str | None, dry_run: bool,
                   video_format: str | None = None) -> None:
     import config
     config.validate_config(skip_youtube=dry_run)
     video_format = video_format or config.DEFAULT_FORMAT
 
-    from idea import get_trending_topic, generate_script
+    from idea import get_trending_topic, generate_idea, generate_script, generate_metadata
     from voice import text_to_speech
     from video import fetch_footage, generate_footage_ai, assemble_video
     from captions import add_captions
@@ -65,12 +93,12 @@ def run_pipeline(topic: str | None, dry_run: bool,
     if top_performers:
         logger.info("Top performers loaded: %s", [p["topic"] for p in top_performers])
 
-    # 1. Topic + script
+    # 1. Topic → Idea → Script
     if not topic:
         topic = _run_stage("Get trending topic", get_trending_topic,
                            top_performers=top_performers)
-    script = _run_stage("Generate script", generate_script, topic,
-                        format_name=video_format)
+    idea = _run_stage("Generate idea", generate_idea, topic, video_format)
+    script = _run_stage("Generate script", generate_script, idea)
 
     logger.info("Script preview:\n%s", script.full_script[:200])
 
@@ -80,7 +108,19 @@ def run_pipeline(topic: str | None, dry_run: bool,
     # 2. Text → speech
     audio: Path = _run_stage("Text-to-speech", text_to_speech, script.full_script)
 
-    # 3. Footage — AI-generated (fal.ai) when available, else Pexels stock
+    # 3. Quality gate (word count, duration, no visual refs) — retry once if bad
+    audio_duration = _get_audio_duration(audio)
+    ok, issues = _check_quality(script, audio_duration)
+    if not ok:
+        logger.warning("Quality gate FAILED: %s — retrying script once.", issues)
+        script = _run_stage("Generate script (retry)", generate_script, idea)
+        audio = _run_stage("Text-to-speech (retry)", text_to_speech, script.full_script)
+        audio_duration = _get_audio_duration(audio)
+        ok, issues = _check_quality(script, audio_duration)
+        if not ok:
+            logger.warning("Quality gate still failing after retry: %s — continuing anyway.", issues)
+
+    # 4. Footage — AI-generated (fal.ai) when available, else Pexels stock
     if config.FAL_KEY and script.clips:
         clips: list[Path] = _run_stage("Generate AI footage", generate_footage_ai, script.clips)
     else:
@@ -88,34 +128,44 @@ def run_pipeline(topic: str | None, dry_run: bool,
     raw_video: Path = _run_stage("Assemble video", assemble_video, clips, audio,
                                   out_name=f"raw_{tag}.mp4")
 
-    # 4. Captions
+    # 5. Captions
     final_video: Path = _run_stage("Add captions", add_captions, raw_video, audio,
                                     script_text=script.full_script,
                                     out_name=f"final_{tag}.mp4")
 
-    # 5. Publish (skipped in dry-run)
+    # 6. Publish (skipped in dry-run)
     if dry_run:
-        logger.info("🏁 DRY RUN complete. Final video: %s", final_video)
+        logger.info("DRY RUN complete. Final video: %s", final_video)
         print(f"\nDry run complete!\nVideo saved to: {final_video.resolve()}")
     else:
+        metadata = _run_stage("Generate metadata", generate_metadata, script, idea)
         url: str = _run_stage(
             "Upload to YouTube",
             upload_to_youtube,
             final_video,
-            title=script.topic,
-            description=script.full_script,
-            tags=script.keywords,
+            title=metadata.title,
+            description=metadata.description,
+            tags=script.keywords + metadata.hashtags,
         )
         # Log the run for future feedback-loop scoring
         try:
             from urllib.parse import urlparse, parse_qs
             video_id = parse_qs(urlparse(url).query).get("v", [None])[0]
             if video_id:
-                tracker.log_run(topic=script.topic, video_id=video_id, url=url)
+                tracker.log_run(
+                    topic=script.topic,
+                    video_id=video_id,
+                    url=url,
+                    angle=idea.angle,
+                    format=script.format,
+                    hook=script.hook,
+                    word_count=len(script.full_script.split()),
+                    duration=audio_duration,
+                )
         except Exception as exc:
             logger.warning("Could not log run to tracker: %s", exc)
 
-        logger.info("🏁 Pipeline complete! %s", url)
+        logger.info("Pipeline complete! %s", url)
         print(f"\nDone! Video live at: {url}")
 
 
