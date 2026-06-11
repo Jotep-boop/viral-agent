@@ -78,6 +78,122 @@ def _check_quality(script, duration: float) -> tuple[bool, list[str]]:
     return not issues, issues
 
 
+def _extract_frames(video_path: Path, count: int = 3) -> list[str]:
+    """Extract evenly-spaced frames and return them as base64-encoded JPEG strings."""
+    import base64, tempfile, subprocess as _sp
+    probe = _sp.run(
+        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+         "-of", "default=noprint_wrappers=1:nokey=1", str(video_path)],
+        capture_output=True, text=True,
+    )
+    try:
+        duration = float(probe.stdout.strip())
+    except ValueError:
+        duration = 30.0
+    frames = []
+    with tempfile.TemporaryDirectory() as tmp:
+        for idx in range(count):
+            t = duration * (idx + 1) / (count + 1)
+            out = Path(tmp) / f"frame_{idx}.jpg"
+            _sp.run(
+                ["ffmpeg", "-y", "-ss", f"{t:.2f}", "-i", str(video_path),
+                 "-frames:v", "1", "-q:v", "5", str(out)],
+                capture_output=True,
+            )
+            if out.exists():
+                frames.append(base64.b64encode(out.read_bytes()).decode())
+    return frames
+
+
+def _review_frames(frames: list[str], script) -> tuple[bool, list[str]]:
+    """Send extracted frames to a vision model to verify the video looks acceptable."""
+    if not frames:
+        return True, []
+    try:
+        from openai import OpenAI
+        import config as _cfg
+        client = OpenAI(
+            base_url="https://openrouter.ai/api/v1",
+            api_key=_cfg.OPENROUTER_API_KEY,
+        )
+        content: list[dict] = []
+        for b64 in frames:
+            content.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:image/jpeg;base64,{b64}"},
+            })
+        content.append({
+            "type": "text",
+            "text": (
+                f"Script topic: {script.topic}\nScript hook: {script.hook}\n\n"
+                "These are frames from a YouTube Shorts science video. Check:\n"
+                "1. Do the visuals relate to the science topic?\n"
+                "2. Is there anything obviously broken (solid black, corrupted, completely off-topic)?\n"
+                "Reply: PASS or FAIL, then list any specific issues on new lines."
+            ),
+        })
+        response = client.chat.completions.create(
+            model=_cfg.OPENROUTER_MODEL,
+            max_tokens=200,
+            messages=[{"role": "user", "content": content}],
+        )
+        answer = response.choices[0].message.content.strip()
+        ok = answer.upper().startswith("PASS")
+        issues = [line.strip() for line in answer.split("\n")[1:] if line.strip()]
+        if not ok:
+            logger.warning("Frame review FAILED: %s", issues)
+        return ok, issues
+    except Exception as exc:
+        logger.warning("Frame review error (%s) — skipping check.", exc)
+        return True, []
+
+
+def _pick_best_script(candidates: list[dict], topic: str) -> tuple:
+    """Generate scripts for top candidates, run partial quality gate, pick the best.
+
+    Returns (VideoIdea, Script) for the best passing candidate.
+    Falls back to the highest-score candidate if none pass.
+    """
+    from idea import VideoIdea, generate_script
+    import config as _cfg
+
+    top3 = sorted(candidates, key=lambda c: c.get("score", 0), reverse=True)[:3]
+    results = []
+    for cdata in top3:
+        fmt = cdata.get("format", _cfg.NICHE_FORMATS[0])
+        if fmt not in _cfg.NICHE_FORMATS:
+            fmt = _cfg.NICHE_FORMATS[0]
+        idea = VideoIdea(
+            topic=topic,
+            angle=cdata["angle"],
+            format=fmt,
+            target_emotion=cdata.get("target_emotion", "curiosity"),
+            viewer_question=cdata.get("viewer_question", ""),
+        )
+        try:
+            script = generate_script(idea)
+            wc = len(script.full_script.split())
+            issues = []
+            if not 60 <= wc <= 115:
+                issues.append(f"word_count {wc}")
+            for phrase in ["look at", "see this", "watch this", "as you can see"]:
+                if phrase in script.full_script.lower():
+                    issues.append(f"visual ref: '{phrase}'")
+            results.append((idea, script, len(issues)))
+        except Exception as exc:
+            logger.warning("Script generation failed for angle '%s': %s", cdata["angle"][:50], exc)
+
+    if not results:
+        raise RuntimeError("All script candidates failed to generate")
+
+    results.sort(key=lambda r: r[2])
+    best_idea, best_script, n_issues = results[0]
+    if n_issues > 0:
+        logger.warning("Best script candidate has %d partial quality issue(s) — using anyway.", n_issues)
+    logger.info("Selected script: '%s' [%s]", best_idea.angle[:60], best_idea.format)
+    return best_idea, best_script
+
+
 def _check_clip_prompts(idea, clips: list[dict]) -> tuple[bool, list[str]]:
     """Verify clip prompts before sending to fal.ai — saves money on bad generations."""
     issues = []
@@ -124,15 +240,16 @@ def run_pipeline(topic: str | None, dry_run: bool,
     if top_performers:
         logger.info("Top performers loaded: %s", [p["topic"] for p in top_performers])
 
-    # 1. Topic → Idea tournament → Script
+    # 1. Topic → Idea tournament → Multi-candidate script selection
     if not topic:
         topic = _run_stage("Get trending topic", get_trending_topic,
                            top_performers=top_performers)
     insights = tracker.get_performance_insights()
-    idea, _candidates = _run_stage("Idea tournament", run_idea_tournament,
-                                    topic, video_format, insights=insights)
-    script = _run_stage("Generate script", generate_script, idea)
+    _winner, candidates = _run_stage("Idea tournament", run_idea_tournament,
+                                      topic, video_format, insights=insights)
 
+    # Pick the best script from top-3 tournament candidates (cheap LLM calls, no TTS yet)
+    idea, script = _run_stage("Pick best script", _pick_best_script, candidates, topic)
     logger.info("Script preview:\n%s", script.full_script[:200])
 
     # Unique tag per run so videos don't overwrite each other
@@ -184,7 +301,18 @@ def run_pipeline(topic: str | None, dry_run: bool,
                                     out_name=f"final_{tag}.mp4",
                                     emphasis_words=script.emphasis_words)
 
-    # 7. Publish (skipped in dry-run)
+    # 7. Frame review — vision model checks frames before upload
+    frames = _extract_frames(final_video)
+    frame_ok, frame_issues = _review_frames(frames, script)
+    if not frame_ok:
+        logger.warning(
+            "Frame review FAILED: %s — saving video locally but skipping upload.", frame_issues
+        )
+        logger.info("Video saved locally: %s", final_video)
+        print(f"\nFrame review failed: {frame_issues}\nVideo saved (not uploaded): {final_video.resolve()}")
+        return
+
+    # 8. Publish (skipped in dry-run)
     if dry_run:
         logger.info("DRY RUN complete. Final video: %s", final_video)
         print(f"\nDry run complete!\nVideo saved to: {final_video.resolve()}")

@@ -24,6 +24,18 @@ FAL_KEY: str = os.environ.get("FAL_KEY", "")
 FALAI_MODEL: str = os.environ.get("FALAI_MODEL", "fal-ai/kling-video/v1.6/standard/text-to-video")
 DEFAULT_FORMAT: str = os.environ.get("DEFAULT_FORMAT", "informative")
 
+# ── Channel niche ─────────────────────────────────────────────────────────────
+NICHE: str = "mind-blowing science"
+NICHE_DESCRIPTION: str = (
+    "counterintuitive, jaw-dropping facts about physics, space, mathematics, "
+    "biology, chemistry, and the human body"
+)
+NICHE_FORMATS: list[str] = ["informative", "scary", "mythbuster"]
+
+# ── fal.ai model overrides ────────────────────────────────────────────────────
+FALAI_IMAGE_MODEL: str = os.environ.get("FALAI_IMAGE_MODEL", "fal-ai/flux/schnell")
+FALAI_I2V_MODEL: str = os.environ.get("FALAI_I2V_MODEL", "fal-ai/kling-video/v1.6/standard/image-to-video")
+
 # ── Pipeline settings ─────────────────────────────────────────────────────────
 OUTPUT_DIR: Path = Path(os.environ.get("OUTPUT_DIR", "output"))
 VIDEO_WIDTH: int = int(os.environ.get("VIDEO_WIDTH", 1080))
