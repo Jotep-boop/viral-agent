@@ -128,8 +128,9 @@ def run_pipeline(topic: str | None, dry_run: bool,
     if not topic:
         topic = _run_stage("Get trending topic", get_trending_topic,
                            top_performers=top_performers)
+    insights = tracker.get_performance_insights()
     idea, _candidates = _run_stage("Idea tournament", run_idea_tournament,
-                                    topic, video_format)
+                                    topic, video_format, insights=insights)
     script = _run_stage("Generate script", generate_script, idea)
 
     logger.info("Script preview:\n%s", script.full_script[:200])

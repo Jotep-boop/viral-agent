@@ -92,6 +92,8 @@ RULES:
 4. START WITH THE SURPRISING FACT — never open with background the viewer already knows
    ("X is a weird animal" / "Everyone knows X" / "Did you know"). Drop them into the
    payoff on word one. Save the "why/how" for after you've hooked them.
+5. LOOP ENDING — the final sentence must flow naturally back into the hook so the
+   video replays seamlessly (rewatches boost the algorithm).
 
 Return ONLY valid JSON:
 {{
@@ -126,6 +128,8 @@ RULES:
 2. Voiceover only — NEVER reference visuals on screen.
 3. Number 1 must feel like a satisfying climax.
 4. Hook must tease the payoff — don't open with "did you know" or generic setup.
+5. LOOP ENDING — the final sentence must flow naturally back into the hook so the
+   video replays seamlessly (rewatches boost the algorithm).
 
 Return ONLY valid JSON:
 {{
@@ -170,6 +174,8 @@ RULES:
 1. The question must feel answerable but have a surprising answer.
 2. Voiceover only — never reference visuals on screen.
 3. Total script 70-90 words. Keep the pause beat short and punchy.
+4. LOOP ENDING — the final sentence must flow naturally back into the hook so the
+   video replays seamlessly (rewatches boost the algorithm).
 
 Return ONLY valid JSON:
 {{
@@ -209,6 +215,8 @@ RULES:
 1. No specific real people by name unless widely known. No local events.
 2. Voiceover only — never reference visuals on screen.
 3. Total script 90-110 words. Keep pace brisk — no filler.
+4. LOOP ENDING — the final sentence must flow naturally back into the hook so the
+   video replays seamlessly (rewatches boost the algorithm).
 
 Return ONLY valid JSON:
 {{
@@ -250,6 +258,8 @@ RULES:
 2. Voiceover only — NEVER reference visuals on screen.
 3. Total script 80-100 words.
 4. State the myth with conviction on word one — no "did you know" preamble.
+5. LOOP ENDING — the final sentence must flow naturally back into the hook so the
+   video replays seamlessly (rewatches boost the algorithm).
 
 Return ONLY valid JSON:
 {{
@@ -293,6 +303,8 @@ RULES:
 2. Voiceover only — NEVER reference visuals on screen.
 3. Total script 80-100 words. Slow delivery implied — shorter is fine.
 4. Open with the most unsettling fact immediately — don't warm up with context.
+5. LOOP ENDING — the final haunting sentence should circle back to the opening dread
+   so the video replays seamlessly (rewatches boost the algorithm).
 
 Return ONLY valid JSON:
 {{
@@ -333,6 +345,8 @@ RULES:
 2. Voiceover only — NEVER reference visuals on screen.
 3. Total script 80-100 words. Keep each round punchy (1-2 sentences).
 4. Hook must set up a genuine "wait, who wins?" tension from the first word.
+5. LOOP ENDING — the final sentence must flow naturally back into the hook so the
+   video replays seamlessly (rewatches boost the algorithm).
 
 Return ONLY valid JSON:
 {{

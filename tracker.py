@@ -11,7 +11,12 @@ import config
 logger = logging.getLogger(__name__)
 
 _LOG_FILE = config.OUTPUT_DIR / "performance.json"
-_STATS_TTL_HOURS = 48
+
+# Shorts live or die in the first 48 hours — poll fresh videos hourly,
+# then fall back to a slow cadence once the initial algorithm test is over.
+_FRESH_WINDOW_HOURS = 48   # video age below which it counts as "fresh"
+_FRESH_TTL_HOURS = 1       # refresh interval for fresh videos
+_STATS_TTL_HOURS = 48      # refresh interval for older videos
 
 
 def log_run(
@@ -49,14 +54,24 @@ def log_run(
     logger.info("Logged run: %s → %s", topic, video_id)
 
 
+def _is_stale(entry: dict) -> bool:
+    """A fresh video (<48h old) is stale after 1h; older videos after 48h."""
+    fetched_at = entry.get("stats_fetched_at")
+    if fetched_at is None:
+        return True
+    age = _hours_since(entry["uploaded_at"]) if entry.get("uploaded_at") else float("inf")
+    ttl = _FRESH_TTL_HOURS if age < _FRESH_WINDOW_HOURS else _STATS_TTL_HOURS
+    return _hours_since(fetched_at) >= ttl
+
+
 def refresh_stats() -> None:
-    """Fetch updated stats for entries whose stats are missing or stale (>48 h)."""
+    """Fetch updated stats for stale entries.
+
+    Fresh videos (uploaded <48h ago) refresh hourly to capture the early
+    views_per_hour signal; older videos refresh every 48h.
+    """
     entries = _load()
-    stale = [
-        e for e in entries
-        if e.get("stats_fetched_at") is None
-        or _hours_since(e["stats_fetched_at"]) >= _STATS_TTL_HOURS
-    ]
+    stale = [e for e in entries if _is_stale(e)]
     if not stale:
         logger.info("Performance stats are up to date (%d entries).", len(entries))
         return
@@ -99,10 +114,24 @@ def refresh_stats() -> None:
     logger.info("Refreshed stats for %d/%d stale entries.", updated, len(stale))
 
 
+def _qualified(entries: list[dict]) -> list[dict]:
+    """Entries with enough views to carry signal.
+
+    Threshold adapts to channel size: 100 views once the channel has traction,
+    otherwise 2x the channel average (so early outliers like 43-view videos
+    still count on a small channel).
+    """
+    views = [e.get("views", 0) for e in entries if e.get("views", 0) > 0]
+    if not views:
+        return []
+    avg = sum(views) / len(views)
+    threshold = 100 if max(views) >= 100 else max(5, avg * 2)
+    return [e for e in entries if e.get("views", 0) >= threshold]
+
+
 def get_top_performers(n: int = 5) -> list[dict]:
-    """Return the top N entries by view count (minimum 100 views to qualify)."""
-    entries = _load()
-    qualified = [e for e in entries if e.get("views", 0) >= 100]
+    """Return the top N entries by view count (adaptive qualification threshold)."""
+    qualified = _qualified(_load())
     return sorted(qualified, key=lambda e: e["views"], reverse=True)[:n]
 
 
@@ -116,8 +145,7 @@ def get_performance_insights() -> dict:
     """
     from collections import defaultdict
 
-    entries = _load()
-    qualified = [e for e in entries if e.get("views", 0) >= 100]
+    qualified = _qualified(_load())
     if not qualified:
         return {"format_breakdown": {}, "top_hooks": [], "overall_avg_views": 0}
 
