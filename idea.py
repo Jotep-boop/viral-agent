@@ -137,9 +137,12 @@ def run_idea_tournament(
     topic: str,
     format_name: str | None = None,
     count: int = 10,
+    insights: dict | None = None,
 ) -> tuple[VideoIdea, list[dict]]:
     """Generate *count* angles, score them all, return (winner VideoIdea, all candidates).
 
+    insights: output of tracker.get_performance_insights() — when provided,
+    the scorer weighs angles against what has actually performed on the channel.
     Candidates are also appended to output/idea_candidates.jsonl for debugging.
     """
     client = OpenAI(
@@ -174,12 +177,19 @@ def run_idea_tournament(
         f"{i}. [{d.get('format','?')} / {d.get('target_emotion','?')}] {d['angle']}"
         for i, d in enumerate(ideas_data)
     )
+    score_user_content = f"Topic: {topic}\n\nIdeas:\n{numbered}"
+    if insights and (insights.get("format_breakdown") or insights.get("top_hooks")):
+        score_user_content += (
+            "\n\nActual performance data from this channel (weigh this heavily —"
+            " formats and hook styles that already worked deserve higher scores):\n"
+            + json.dumps(insights, ensure_ascii=False)
+        )
     score_raw = client.chat.completions.create(
         model=config.OPENROUTER_MODEL,
         max_tokens=800,
         messages=[
             {"role": "system", "content": _IDEA_SCORING_PROMPT},
-            {"role": "user",   "content": f"Topic: {topic}\n\nIdeas:\n{numbered}"},
+            {"role": "user",   "content": score_user_content},
         ],
     ).choices[0].message.content.strip()
     score_raw = re.sub(r"^```(?:json)?\s*", "", score_raw)
