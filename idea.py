@@ -47,19 +47,23 @@ class Script:
 # ── Idea generation ──────────────────────────────────────────────────────────
 
 _IDEA_PROMPT = """\
-You are a YouTube Shorts strategist. Given a topic, generate the best possible viral angle.
+You are a YouTube Shorts strategist for a mind-blowing science channel.
+Channel niche: {niche} — {niche_desc}.
 
+Given a topic, generate the best possible viral angle.
 Your job is NOT to describe the topic generally. Your job is to find the one specific angle
 that will make someone stop scrolling and watch. Think: surprising fact, counterintuitive truth,
 emotional hook, or jaw-dropping statistic.
 
+Only use formats that fit the science niche: informative, scary, or mythbuster.
+
 Return ONLY valid JSON:
-{
+{{
   "angle": "the specific hook angle as a short punchy phrase",
-  "format": "one of: informative | top5 | quiz | story | mythbuster | scary | versus",
+  "format": "one of: informative | scary | mythbuster",
   "target_emotion": "one of: fear | surprise | curiosity | humor | awe",
   "viewer_question": "the question left unanswered in the viewer's head that makes them watch"
-}"""
+}}"""
 
 _METADATA_PROMPT = """\
 You are a YouTube SEO expert and viral title writer. Generate metadata for a YouTube Short.
@@ -80,42 +84,48 @@ Return ONLY valid JSON:
 
 
 _IDEA_BATCH_PROMPT = """\
-You are a YouTube Shorts strategist. Generate {count} DIFFERENT viral angle ideas for the given topic.
+You are a YouTube Shorts strategist for a mind-blowing science channel.
+Channel niche: {niche} — {niche_desc}.
+
+Generate {count} DIFFERENT viral angle ideas for the given topic.
 
 Rules:
-- Vary the format across the list (informative, scary, quiz, story, mythbuster, versus, top5)
-- Vary the emotional angle — some curious, some scary, some surprising, some humorous
+- ALL ideas must be framed as counterintuitive or jaw-dropping science facts
+- Only use formats that fit the niche: informative, scary, mythbuster
+- Vary the emotional angle — some fear-inducing, some surprising, some curiosity-driven
 - Every angle must be UNIQUE — different hook, different framing
 - Each angle must be a short punchy phrase that could work as the opening sentence
+- Prefer angles that reference specific numbers, comparisons, or facts
 
 Return ONLY a valid JSON array of exactly {count} objects:
 [
   {{
     "angle": "specific punchy hook phrase",
-    "format": "informative|top5|quiz|story|mythbuster|scary|versus",
+    "format": "informative|scary|mythbuster",
     "target_emotion": "fear|surprise|curiosity|humor|awe",
     "viewer_question": "question left in viewer's head"
   }}
 ]"""
 
 _IDEA_SCORING_PROMPT = """\
-You are a viral content analyst scoring YouTube Shorts ideas.
+You are a viral content analyst scoring YouTube Shorts ideas for a mind-blowing science channel.
+Channel niche: {niche} — {niche_desc}.
 
 Score each idea 0-100 on these criteria (equal weight):
 1. hook_strength — how scroll-stopping in the first 3 seconds?
 2. curiosity_gap — does it leave a burning unanswered question?
 3. visual_payoff — can the FIRST clip show the core claim directly (not context)?
 4. comment_potential — will people argue, react, or comment their answer?
-5. evergreen_value — will it work in 6 months (not tied to a breaking news moment)?
+5. niche_fit — does this fit the channel's science niche? Off-topic ideas score 0-20 here.
 
 Return ONLY valid JSON:
-{
+{{
   "scores": [
-    {"index": 0, "total": 87, "reason": "one sentence why"},
+    {{"index": 0, "total": 87, "reason": "one sentence why"}},
     ...
   ],
   "winner": 3
-}"""
+}}"""
 
 _CANDIDATES_LOG = None  # initialised lazily
 
@@ -153,7 +163,9 @@ def run_idea_tournament(
     logger.info("Idea tournament: generating %d candidates for '%s'", count, topic)
 
     # Step 1 — batch-generate ideas
-    batch_prompt = _IDEA_BATCH_PROMPT.format(count=count)
+    batch_prompt = _IDEA_BATCH_PROMPT.format(
+        count=count, niche=config.NICHE, niche_desc=config.NICHE_DESCRIPTION,
+    )
     user_msg = f"Topic: {topic}"
     if format_name:
         user_msg += f"\nPreferred format hint: {format_name}"
@@ -184,11 +196,14 @@ def run_idea_tournament(
             " formats and hook styles that already worked deserve higher scores):\n"
             + json.dumps(insights, ensure_ascii=False)
         )
+    scoring_prompt = _IDEA_SCORING_PROMPT.format(
+        niche=config.NICHE, niche_desc=config.NICHE_DESCRIPTION,
+    )
     score_raw = client.chat.completions.create(
         model=config.OPENROUTER_MODEL,
         max_tokens=800,
         messages=[
-            {"role": "system", "content": _IDEA_SCORING_PROMPT},
+            {"role": "system", "content": scoring_prompt},
             {"role": "user",   "content": score_user_content},
         ],
     ).choices[0].message.content.strip()
@@ -221,10 +236,13 @@ def run_idea_tournament(
         logger.warning("Could not log idea candidates: %s", exc)
 
     winner_data = ideas_data[winner_idx]
+    winner_format = winner_data.get("format", format_name or config.DEFAULT_FORMAT)
+    if winner_format not in config.NICHE_FORMATS:
+        winner_format = config.NICHE_FORMATS[0]
     winner = VideoIdea(
         topic=topic,
         angle=winner_data["angle"],
-        format=winner_data.get("format", format_name or config.DEFAULT_FORMAT),
+        format=winner_format,
         target_emotion=winner_data.get("target_emotion", "curiosity"),
         viewer_question=winner_data.get("viewer_question", ""),
     )
@@ -245,11 +263,12 @@ def generate_idea(topic: str, format_name: str | None = None) -> VideoIdea:
     if format_name:
         user_msg += f"\nPreferred format: {format_name} (suggest this unless a different format is clearly better)"
 
+    system_prompt = _IDEA_PROMPT.format(niche=config.NICHE, niche_desc=config.NICHE_DESCRIPTION)
     response = client.chat.completions.create(
         model=config.OPENROUTER_MODEL,
         max_tokens=256,
         messages=[
-            {"role": "system", "content": _IDEA_PROMPT},
+            {"role": "system", "content": system_prompt},
             {"role": "user",   "content": user_msg},
         ],
     )
@@ -306,19 +325,24 @@ def generate_metadata(script: "Script", idea: VideoIdea | None = None) -> VideoM
 # ── Trending topic ────────────────────────────────────────────────────────────
 
 _SCORING_PROMPT = """\
-You are a YouTube Shorts content strategist. Pick the BEST topic from the list below to make a viral short-form video (under 60 seconds).
+You are a YouTube Shorts content strategist for a mind-blowing science channel.
+Channel niche: {niche} — {niche_desc}.
+
+Pick the BEST topic from the list below to make a viral short-form science video (under 60 seconds).
+ONLY consider topics that can be framed as surprising, counterintuitive, or jaw-dropping science facts.
+If no topic fits the science niche well, pick the one that can most naturally be given a science angle.
 
 Score each topic on all four criteria:
-1. Hook potential — can it open with a "did you know" or jaw-dropping fact?
+1. Niche fit — can it be framed as a mind-blowing science fact?
 2. Universal appeal — globally interesting, not tied to local news or regional events?
-3. Visual potential — can generic stock footage (nature, animals, space, people) cover it?
-4. Momentum — does it feel fresh and on the rise, not already saturated?
+3. Visual potential — can AI-generated footage (space, lab, nature, extreme scales) cover it?
+4. Hook potential — does it open with a fact that makes someone stop scrolling?
 
 Return ONLY valid JSON:
-{
+{{
   "winner": "the best topic exactly as it appeared in the list",
   "reason": "one sentence why it wins"
-}"""
+}}"""
 
 
 def get_trending_topic(geo: str = "SE", top_performers: list[dict] | None = None) -> str:
@@ -383,11 +407,14 @@ def score_and_select_topic(candidates: list[str], top_performers: list[dict] | N
         )
         user_content += f"\n\nPrevious top performers on this channel:\n{performers_text}\nPrefer topics in a similar style or category to these proven performers."
 
+    scoring_prompt = _SCORING_PROMPT.format(
+        niche=config.NICHE, niche_desc=config.NICHE_DESCRIPTION,
+    )
     response = client.chat.completions.create(
         model=config.OPENROUTER_MODEL,
         max_tokens=256,
         messages=[
-            {"role": "system", "content": _SCORING_PROMPT},
+            {"role": "system", "content": scoring_prompt},
             {"role": "user",   "content": user_content},
         ],
     )

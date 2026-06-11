@@ -43,7 +43,7 @@ def generate_ideas(topic: str = "", count: int = 5) -> str:
             insights = tracker.get_performance_insights()
         except Exception:
             insights = None
-        _winner, candidates = run_idea_tournament(topic, count=count, insights=insights)
+        _winner, candidates = run_idea_tournament(topic, format_name=None, count=count, insights=insights)
         # Sort by score descending so Hermes sees the best first
         candidates_sorted = sorted(candidates, key=lambda c: c.get("score", 0), reverse=True)
         return json.dumps(candidates_sorted)

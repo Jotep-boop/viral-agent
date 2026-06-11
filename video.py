@@ -78,37 +78,162 @@ def _download_file(url: str, dest: Path) -> None:
 # ── fal.ai AI footage ─────────────────────────────────────────────────────────
 
 def generate_footage_ai(clips: list[dict]) -> list[Path]:
-    """Generate video clips via fal.ai using per-clip prompts from the script.
+    """Generate video clips via image-first pipeline: Flux stills → vision review → Kling i2v.
 
-    Runs up to 3 generations in parallel. Falls back to Pexels on error.
+    Falls back to text-to-video if image generation fails.
+    Runs up to 3 generations in parallel.
     """
+    os.environ.setdefault("FAL_KEY", config.FAL_KEY)
+    try:
+        return _generate_footage_image_first(clips)
+    except Exception as exc:
+        logger.warning("Image-first pipeline failed (%s) — falling back to text-to-video.", exc)
+        return _generate_footage_text_to_video(clips)
+
+
+def _generate_still(i: int, clip: dict) -> tuple[int, dict, str]:
+    """Generate a single still image via Flux/schnell. Returns (index, clip, image_url)."""
+    import fal_client  # type: ignore
+    prompt = clip["prompt"]
+    logger.info("Generating still %d: %s", i, prompt[:70])
+    result = fal_client.subscribe(
+        config.FALAI_IMAGE_MODEL,
+        arguments={
+            "prompt": prompt,
+            "image_size": "portrait_4_3",
+            "num_images": 1,
+            "enable_safety_checker": False,
+        },
+    )
+    image_url = result["images"][0]["url"]
+    logger.info("Still %d ready: %s", i, image_url[:60])
+    return i, clip, image_url
+
+
+def _review_still(clip: dict, image_url: str) -> bool:
+    """Ask a vision model whether the still matches the intended clip prompt.
+
+    Returns True if the image is acceptable, False if it should be regenerated.
+    Uses a conservative threshold — only rejects clearly off-topic images.
+    """
+    try:
+        from openai import OpenAI
+        client = OpenAI(
+            base_url="https://openrouter.ai/api/v1",
+            api_key=config.OPENROUTER_API_KEY,
+        )
+        prompt_text = clip["prompt"]
+        response = client.chat.completions.create(
+            model=config.OPENROUTER_MODEL,
+            max_tokens=100,
+            messages=[{
+                "role": "user",
+                "content": [
+                    {"type": "image_url", "image_url": {"url": image_url}},
+                    {"type": "text", "text": (
+                        f"Intended clip: \"{prompt_text}\"\n\n"
+                        "Does this image approximately match what the clip intends to show? "
+                        "Reply with just YES or NO and one brief reason."
+                    )},
+                ],
+            }],
+        )
+        answer = response.choices[0].message.content.strip().upper()
+        ok = answer.startswith("YES")
+        if not ok:
+            logger.warning("Still rejected by vision review: %s", answer[:80])
+        return ok
+    except Exception as exc:
+        logger.warning("Vision review failed (%s) — accepting still.", exc)
+        return True
+
+
+def _generate_footage_image_first(clips: list[dict]) -> list[Path]:
+    """Generate stills → vision review → animate to video for each clip."""
     import fal_client  # type: ignore
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
-    os.environ.setdefault("FAL_KEY", config.FAL_KEY)
+    # Step 1: generate stills in parallel
+    stills: dict[int, tuple[dict, str]] = {}
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        futures = {pool.submit(_generate_still, i, c): i for i, c in enumerate(clips)}
+        for f in as_completed(futures):
+            i, clip, image_url = f.result()
+            stills[i] = (clip, image_url)
 
-    def _generate(i: int, clip: dict) -> Path:
+    # Step 2: vision review — regenerate rejected stills once
+    for i in sorted(stills):
+        clip, image_url = stills[i]
+        if not _review_still(clip, image_url):
+            logger.info("Regenerating still %d after rejection...", i)
+            try:
+                _, clip, image_url = _generate_still(i, clip)
+                stills[i] = (clip, image_url)
+            except Exception as exc:
+                logger.warning("Regeneration of still %d failed (%s) — using original.", i, exc)
+
+    # Step 3: animate stills to video in parallel
+    video_paths: dict[int, Path] = {}
+
+    def _animate(i: int, clip: dict, image_url: str) -> tuple[int, Path]:
+        dest = config.OUTPUT_DIR / "clips" / f"ai_clip_{i:02d}.mp4"
+        duration = str(min(int(clip.get("duration", 5)), 10))
+        logger.info("Animating still %d (%ss) → video", i, duration)
+        result = fal_client.subscribe(
+            config.FALAI_I2V_MODEL,
+            arguments={
+                "image_url": image_url,
+                "prompt": clip["prompt"],
+                "duration": duration,
+                "aspect_ratio": "9:16",
+            },
+        )
+        video_url = result["video"]["url"]
+        _download_file(video_url, dest)
+        logger.info("Animated clip %d done → %s", i, dest.name)
+        return i, dest
+
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        futures = {
+            pool.submit(_animate, i, clip, image_url): i
+            for i, (clip, image_url) in stills.items()
+        }
+        for f in as_completed(futures):
+            i, path = f.result()
+            video_paths[i] = path
+
+    ordered = [video_paths[i] for i in sorted(video_paths)]
+    logger.info("Generated %d AI clip(s) via image-first pipeline.", len(ordered))
+    return ordered
+
+
+def _generate_footage_text_to_video(clips: list[dict]) -> list[Path]:
+    """Fallback: generate clips directly from text prompts via Kling text-to-video."""
+    import fal_client  # type: ignore
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    def _generate(i: int, clip: dict) -> tuple[int, Path]:
         dest = config.OUTPUT_DIR / "clips" / f"ai_clip_{i:02d}.mp4"
         prompt = clip["prompt"]
         duration = str(min(int(clip.get("duration", 5)), 10))
-        logger.info("Generating AI clip %d (%ss): %s", i, duration, prompt[:70])
+        logger.info("Generating t2v clip %d (%ss): %s", i, duration, prompt[:70])
         result = fal_client.subscribe(
             config.FALAI_MODEL,
             arguments={"prompt": prompt, "duration": duration, "aspect_ratio": "9:16"},
         )
         video_url = result["video"]["url"]
         _download_file(video_url, dest)
-        logger.info("AI clip %d done → %s", i, dest.name)
-        return dest
+        return i, dest
 
     paths: dict[int, Path] = {}
     with ThreadPoolExecutor(max_workers=3) as pool:
         futures = {pool.submit(_generate, i, c): i for i, c in enumerate(clips)}
         for f in as_completed(futures):
-            paths[futures[f]] = f.result()
+            i, path = f.result()
+            paths[i] = path
 
     ordered = [paths[i] for i in sorted(paths)]
-    logger.info("Generated %d AI clip(s).", len(ordered))
+    logger.info("Generated %d AI clip(s) via text-to-video.", len(ordered))
     return ordered
 
 
