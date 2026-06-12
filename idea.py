@@ -68,15 +68,19 @@ Return ONLY valid JSON:
 _METADATA_PROMPT = """\
 You are a YouTube SEO expert and viral title writer. Generate metadata for a YouTube Short.
 
-Rules for title:
+Rules for titles (generate 3 variants):
 - Max 60 characters ideally (hard max 100)
-- Must create curiosity or urgency — never just state the topic
-- Use numbers, "you", "actually", "nobody talks about", "will shock you", "at night" etc when natural
+- Each variant must take a DIFFERENT psychological angle:
+  1. Curiosity gap ("The real reason X does Y")
+  2. Personal threat/impact ("This is happening inside your body right now")
+  3. Shocking fact/number ("X is 1000x more Y than you think")
 - No clickbait that lies — the video must deliver on the promise
+- best_title_index: pick the variant most likely to get a click from a 14-year-old scrolling fast
 
 Return ONLY valid JSON:
 {
-  "title": "click-optimised YouTube title",
+  "titles": ["title variant 1", "title variant 2", "title variant 3"],
+  "best_title_index": 0,
   "description": "2-3 sentence description, includes main keywords, ends with hashtags on separate line",
   "hashtags": ["#shorts", "#relevant", "#tags"],
   "pinned_comment": "an engaging first comment that asks a question or shares a related fact to spark replies"
@@ -92,10 +96,15 @@ Generate {count} DIFFERENT viral angle ideas for the given topic.
 Rules:
 - ALL ideas must be framed as counterintuitive or jaw-dropping science facts
 - Only use formats that fit the niche: informative, scary, mythbuster
-- Vary the emotional angle — some fear-inducing, some surprising, some curiosity-driven
 - Every angle must be UNIQUE — different hook, different framing
 - Each angle must be a short punchy phrase that could work as the opening sentence
-- Prefer angles that reference specific numbers, comparisons, or facts
+- Prefer angles that reference specific numbers, comparisons, or extreme scales
+
+Among the {count} ideas, cover AT LEAST ONE of each psychological archetype:
+- "Hidden truth" — something most people don't know or that seems impossible
+- "Personal threat" — directly impacts the viewer's body, survival, or daily life
+- "Shocking scale" — uses extreme numbers or comparisons to create a jaw-drop moment
+- "Myth destroyed" — a widely-held belief that science proves wrong
 
 Return ONLY a valid JSON array of exactly {count} objects:
 [
@@ -290,7 +299,7 @@ def generate_idea(topic: str, format_name: str | None = None) -> VideoIdea:
 
 
 def generate_metadata(script: "Script", idea: VideoIdea | None = None) -> VideoMetadata:
-    """Generate click-optimised YouTube metadata from a script and optional VideoIdea."""
+    """Generate click-optimised YouTube metadata with 3 title variants; picks highest-CTR title."""
     client = OpenAI(
         base_url="https://openrouter.ai/api/v1",
         api_key=config.OPENROUTER_API_KEY,
@@ -301,7 +310,7 @@ def generate_metadata(script: "Script", idea: VideoIdea | None = None) -> VideoM
 
     response = client.chat.completions.create(
         model=config.OPENROUTER_MODEL,
-        max_tokens=400,
+        max_tokens=500,
         messages=[
             {"role": "system", "content": _METADATA_PROMPT},
             {"role": "user",   "content": context},
@@ -312,8 +321,18 @@ def generate_metadata(script: "Script", idea: VideoIdea | None = None) -> VideoM
     raw = re.sub(r"\s*```$", "", raw)
     data: dict = json.loads(raw)
 
+    # Support both new (titles list) and old (single title) response formats
+    titles = data.get("titles", [])
+    if titles:
+        best_idx = int(data.get("best_title_index", 0))
+        best_idx = max(0, min(best_idx, len(titles) - 1))
+        title = titles[best_idx][:100]
+        logger.info("Title variants: %s → selected [%d]: %s", titles, best_idx, title)
+    else:
+        title = data.get("title", script.topic)[:100]
+
     metadata = VideoMetadata(
-        title=data["title"][:100],
+        title=title,
         description=data.get("description", script.full_script[:500]),
         hashtags=data.get("hashtags", ["#shorts"]),
         pinned_comment=data.get("pinned_comment", ""),

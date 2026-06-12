@@ -282,19 +282,39 @@ def assemble_video(clips: list[Path], audio: Path, out_name: str = "raw.mp4") ->
 
 def _reencode_clip(src: Path, dst: Path) -> None:
     w, h = config.VIDEO_WIDTH, config.VIDEO_HEIGHT
-    scale_crop = (
+    # Pre-scale 5% larger so Ken Burns zoom-in has pixel-quality headroom
+    ws, hs = int(w * 1.05), int(h * 1.05)
+    # Subtle Ken Burns: zoom from 1.0→1.05 over the clip, centered
+    vf_ken_burns = (
+        f"scale={ws}:{hs}:force_original_aspect_ratio=increase,"
+        f"crop={ws}:{hs},"
+        f"zoompan=z='min(pzoom+0.0002,1.05)':x='(iw-iw/zoom)/2':y='(ih-ih/zoom)/2':d=1:s={w}x{h},"
+        f"setsar=1"
+    )
+    vf_plain = (
         f"scale={w}:{h}:force_original_aspect_ratio=increase,"
         f"crop={w}:{h}"
     )
     cmd = [
         _ffmpeg_bin(), "-y", "-i", str(src),
-        "-vf", scale_crop,
+        "-vf", vf_ken_burns,
         "-r", "30",
         "-c:v", "libx264", "-preset", "ultrafast", "-crf", "28",
         "-an",
         str(dst),
     ]
-    _run(cmd)
+    try:
+        _run(cmd)
+    except RuntimeError:
+        logger.warning("Ken Burns failed for %s — retrying without zoom.", src.name)
+        _run([
+            _ffmpeg_bin(), "-y", "-i", str(src),
+            "-vf", vf_plain,
+            "-r", "30",
+            "-c:v", "libx264", "-preset", "ultrafast", "-crf", "28",
+            "-an",
+            str(dst),
+        ])
 
 
 def _probe_duration(path: Path) -> float:
