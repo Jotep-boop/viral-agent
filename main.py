@@ -66,15 +66,26 @@ def _check_quality(script, duration: float) -> tuple[bool, list[str]]:
     for phrase in ["look at", "see this", "watch this", "as you can see"]:
         if phrase in script.full_script.lower():
             issues.append(f"visual reference: '{phrase}'")
-    # Reject generic openers that bury the payoff
+    # Reject hooks that don't start in-medias-res
     _generic_openers = [
+        # Too academic / educational
         "everyone knows", "did you know", "you probably know",
         "as you know", "most people know", "we all know",
+        "scientists have", "research shows", "studies show", "science says",
+        "according to", "researchers found", "a new study",
+        # Filler intros
+        "today we", "today i", "in this video", "in today", "welcome",
+        "hello", "hi everyone", "what's up", "hey everyone",
+        "let me tell you", "let me show you", "let's talk about",
+        "have you ever wondered", "have you ever heard",
+        # Weak setups
+        "you might think", "you might have heard", "many people think",
+        "it might seem", "it may seem",
     ]
     hook_lower = script.hook.lower()
     for opener in _generic_openers:
         if hook_lower.startswith(opener):
-            issues.append(f"generic opener: '{opener}' — payoff must come first")
+            issues.append(f"weak hook opener: '{opener}' — hook must open in-medias-res")
     return not issues, issues
 
 
