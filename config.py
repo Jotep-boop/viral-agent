@@ -25,10 +25,14 @@ FALAI_MODEL: str = os.environ.get("FALAI_MODEL", "fal-ai/kling-video/v1.6/standa
 DEFAULT_FORMAT: str = os.environ.get("DEFAULT_FORMAT", "informative")
 
 # ── Channel niche ─────────────────────────────────────────────────────────────
-NICHE: str = "mind-blowing science"
+NICHE: str = "everyday materials and objects with impossible-sounding properties"
 NICHE_DESCRIPTION: str = (
-    "counterintuitive, jaw-dropping facts about physics, space, mathematics, "
-    "biology, chemistry, and the human body"
+    "everyday materials, substances, and objects (concrete, metal, glass, sound, water, light, ice) "
+    "that have secretly extreme or impossible-sounding properties. "
+    "Winning pattern: familiar object + behavior that sounds impossible or alive "
+    "(heals itself, remembers shape, flows like liquid, creates plasma). "
+    "Hook style: 'this sounds fake but it's real' or 'this material is basically alive'. "
+    "Avoid: broad animal facts, general space facts, nature lists, unsolved mysteries without a physical object."
 )
 NICHE_FORMATS: list[str] = ["informative", "scary", "mythbuster"]
 

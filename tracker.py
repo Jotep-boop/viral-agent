@@ -54,6 +54,54 @@ def log_run(
     logger.info("Logged run: %s → %s", topic, video_id)
 
 
+def log_manual(
+    topic: str,
+    video_id: str,
+    url: str,
+    views: int,
+    *,
+    angle: str = "",
+    format: str = "informative",
+    hook: str = "",
+    likes: int = 0,
+    comments: int = 0,
+    uploaded_at: str = "",
+) -> None:
+    """Backfill a manually-uploaded video with known stats into the performance log.
+
+    Use this to seed the feedback loop with videos uploaded outside the pipeline.
+    """
+    entries = _load()
+    # Don't duplicate
+    existing_ids = {e.get("video_id") for e in entries}
+    if video_id in existing_ids:
+        logger.info("video_id %s already in log — skipping.", video_id)
+        return
+    now = _now()
+    like_rate = round(likes / views, 4) if views > 0 and likes > 0 else None
+    comment_rate = round(comments / views, 4) if views > 0 and comments > 0 else None
+    entries.append({
+        "topic": topic,
+        "angle": angle,
+        "format": format,
+        "hook": hook,
+        "word_count": 0,
+        "duration": 0.0,
+        "video_id": video_id,
+        "url": url,
+        "uploaded_at": uploaded_at or now,
+        "views": views,
+        "likes": likes,
+        "comments": comments,
+        "views_per_hour": None,
+        "like_rate": like_rate,
+        "comment_rate": comment_rate,
+        "stats_fetched_at": now,
+    })
+    _save(entries)
+    logger.info("Manually logged: %s → %s (%d views)", topic, video_id, views)
+
+
 def _is_stale(entry: dict) -> bool:
     """A fresh video (<48h old) is stale after 1h; older videos after 48h."""
     fetched_at = entry.get("stats_fetched_at")
