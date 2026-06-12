@@ -1,4 +1,4 @@
-"""idea.py — Fetch a trending topic and generate a video script via OpenRouter."""
+"""idea.py — Fetch trending topics and generate structured video scripts via OpenRouter."""
 from __future__ import annotations
 
 import json
@@ -17,34 +17,36 @@ logger = logging.getLogger(__name__)
 @dataclass
 class VideoIdea:
     topic: str
-    angle: str           # specific hook angle, e.g. "the scariest thing about black holes isn't gravity"
-    format: str          # recommended format based on the angle
-    target_emotion: str  # "fear" | "surprise" | "curiosity" | "humor" | "awe"
-    viewer_question: str # the question the viewer is left asking, e.g. "wait, what IS it then?"
+    angle: str
+    format: str
+    target_emotion: str
+    viewer_question: str
 
 
 @dataclass
 class VideoMetadata:
-    title: str          # click-optimised YouTube title (max 100 chars)
-    description: str    # full video description with context + hashtags
-    hashtags: list[str] # e.g. ["#shorts", "#science", "#facts"]
-    pinned_comment: str # first comment to pin, drives engagement
+    title: str
+    description: str
+    hashtags: list[str]
+    pinned_comment: str
 
 
 @dataclass
 class Script:
     topic: str
-    hook: str         # 0-3 sec
-    core: str         # 3-25 sec
-    cta: str          # 25-30 sec
+    hook: str
+    core: str
+    cta: str
     full_script: str
     keywords: list[str]
-    clips: list[dict] = field(default_factory=list)       # per-clip AI video prompts
-    format: str = "informative"                            # which format produced this script
-    emphasis_words: list[str] = field(default_factory=list)  # words to highlight in captions
+    theme: str
+    fact_summary: str
+    hook_angle: str
+    clips: list[dict] = field(default_factory=list)
+    beats: list[dict] = field(default_factory=list)
+    format: str = "informative"
+    emphasis_words: list[str] = field(default_factory=list)
 
-
-# ── Idea generation ──────────────────────────────────────────────────────────
 
 _IDEA_PROMPT = """\
 You are a YouTube Shorts strategist for a mind-blowing science channel.
@@ -75,6 +77,7 @@ Rules for titles (generate 3 variants):
   2. Personal threat/impact ("This is happening inside your body right now")
   3. Shocking fact/number ("X is 1000x more Y than you think")
 - No clickbait that lies — the video must deliver on the promise
+- All text must be natural English
 - best_title_index: pick the variant most likely to get a click from a 14-year-old scrolling fast
 
 Return ONLY valid JSON:
@@ -86,6 +89,18 @@ Return ONLY valid JSON:
   "pinned_comment": "an engaging first comment that asks a question or shares a related fact to spark replies"
 }"""
 
+_METADATA_SUFFIX = """\
+In addition to the format-specific fields you were already asked to return, ALSO include these JSON fields:
+- "theme": short lowercase theme label like animal biology, strange engineering, deep sea behavior, ancient history
+- "fact_summary": one-sentence factual summary of the unique claim or premise
+- "hook_angle": one sentence describing why the hook feels surprising or clickable
+- optional "title": short English title under 100 characters if you can improve the input topic
+Do not omit any required fields from the chosen format schema.
+All returned text fields must be natural English.
+"""
+
+
+# ── Idea generation ──────────────────────────────────────────────────────────
 
 _IDEA_BATCH_PROMPT = """\
 You are a YouTube Shorts strategist for a mind-blowing science channel.
@@ -289,7 +304,7 @@ def generate_idea(topic: str, format_name: str | None = None) -> VideoIdea:
         max_tokens=256,
         messages=[
             {"role": "system", "content": system_prompt},
-            {"role": "user",   "content": user_msg},
+            {"role": "user", "content": user_msg},
         ],
     )
     raw = response.choices[0].message.content.strip()
@@ -304,18 +319,26 @@ def generate_idea(topic: str, format_name: str | None = None) -> VideoIdea:
         target_emotion=data.get("target_emotion", "curiosity"),
         viewer_question=data.get("viewer_question", ""),
     )
-    logger.info("VideoIdea — angle: %s | emotion: %s | format: %s",
-                idea.angle, idea.target_emotion, idea.format)
+    logger.info(
+        "VideoIdea — angle: %s | emotion: %s | format: %s",
+        idea.angle,
+        idea.target_emotion,
+        idea.format,
+    )
     return idea
 
 
-def generate_metadata(script: "Script", idea: VideoIdea | None = None) -> VideoMetadata:
+def generate_metadata(script: Script, idea: VideoIdea | None = None) -> VideoMetadata:
     """Generate click-optimised YouTube metadata with 3 title variants; picks highest-CTR title."""
     client = OpenAI(
         base_url="https://openrouter.ai/api/v1",
         api_key=config.OPENROUTER_API_KEY,
     )
-    context = f"Topic: {script.topic}\nScript hook: {script.hook}\nScript excerpt: {script.full_script[:300]}"
+    context = (
+        f"Topic: {script.topic}\n"
+        f"Script hook: {script.hook}\n"
+        f"Script excerpt: {script.full_script[:300]}"
+    )
     if idea:
         context += f"\nAngle: {idea.angle}\nTarget emotion: {idea.target_emotion}"
 
@@ -324,7 +347,7 @@ def generate_metadata(script: "Script", idea: VideoIdea | None = None) -> VideoM
         max_tokens=500,
         messages=[
             {"role": "system", "content": _METADATA_PROMPT},
-            {"role": "user",   "content": context},
+            {"role": "user", "content": context},
         ],
     )
     raw = response.choices[0].message.content.strip()
@@ -352,7 +375,7 @@ def generate_metadata(script: "Script", idea: VideoIdea | None = None) -> VideoM
     return metadata
 
 
-# ── Trending topic ────────────────────────────────────────────────────────────
+# ── Trending topic selection ─────────────────────────────────────────────────
 
 _SCORING_PROMPT = """\
 You are a YouTube Shorts content strategist for a mind-blowing science channel.
@@ -376,12 +399,7 @@ Return ONLY valid JSON:
 
 
 def get_trending_topic(geo: str = "SE", top_performers: list[dict] | None = None) -> str:
-    """Return the best trending topic for a viral YouTube Short.
-
-    Gathers candidates from multiple sources, then uses an LLM to score
-    and select the one with the highest viral potential.
-    top_performers: previous high-view entries from tracker.get_top_performers().
-    """
+    """Return the best trending topic for a viral YouTube Short."""
     candidates = get_trending_candidates(geo)
     if not candidates:
         raise RuntimeError("No trending candidates found from any source")
@@ -394,10 +412,10 @@ def get_trending_candidates(geo: str = "SE") -> list[str]:
     """Gather trending topic candidates from all available sources."""
     candidates: list[str] = []
     sources = [
-        ("YouTube",       _trending_via_youtube,     (geo,)),
-        ("Google Trends", _trending_via_pytrends,    (geo,)),
-        ("Hacker News",   _trending_via_hackernews,  ()),
-        ("Google RSS",    _trending_via_google_rss,  (geo,)),
+        ("YouTube", _trending_via_youtube, (geo,)),
+        ("Google Trends", _trending_via_pytrends, (geo,)),
+        ("Hacker News", _trending_via_hackernews, ()),
+        ("Google RSS", _trending_via_google_rss, (geo,)),
     ]
     for name, fn, args in sources:
         try:
@@ -407,14 +425,13 @@ def get_trending_candidates(geo: str = "SE") -> list[str]:
         except Exception as exc:
             logger.warning("%s failed (%s), skipping.", name, exc)
 
-    # Deduplicate while preserving insertion order
     seen: set[str] = set()
     unique: list[str] = []
-    for c in candidates:
-        key = c.lower().strip()
+    for candidate in candidates:
+        key = candidate.lower().strip()
         if key not in seen:
             seen.add(key)
-            unique.append(c)
+            unique.append(candidate)
 
     logger.info("Total unique candidates across all sources: %d", len(unique))
     return unique
@@ -426,16 +443,20 @@ def score_and_select_topic(candidates: list[str], top_performers: list[dict] | N
         base_url="https://openrouter.ai/api/v1",
         api_key=config.OPENROUTER_API_KEY,
     )
-    numbered = "\n".join(f"{i + 1}. {t}" for i, t in enumerate(candidates))
+    numbered = "\n".join(f"{index + 1}. {topic}" for index, topic in enumerate(candidates))
     logger.info("Scoring %d candidates via LLM...", len(candidates))
 
     user_content = f"Trending candidates:\n{numbered}"
     if top_performers:
         performers_text = "\n".join(
-            f'- "{p["topic"]}" — {p["views"]:,} views'
-            for p in top_performers
+            f'- "{entry["topic"]}" — {entry["views"]:,} views'
+            for entry in top_performers
         )
-        user_content += f"\n\nPrevious top performers on this channel:\n{performers_text}\nPrefer topics in a similar style or category to these proven performers."
+        user_content += (
+            "\n\nPrevious top performers on this channel:\n"
+            f"{performers_text}\n"
+            "Prefer topics in a similar style or category to these proven performers."
+        )
 
     scoring_prompt = _SCORING_PROMPT.format(
         niche=config.NICHE, niche_desc=config.NICHE_DESCRIPTION,
@@ -445,7 +466,7 @@ def score_and_select_topic(candidates: list[str], top_performers: list[dict] | N
         max_tokens=256,
         messages=[
             {"role": "system", "content": scoring_prompt},
-            {"role": "user",   "content": user_content},
+            {"role": "user", "content": user_content},
         ],
     )
 
@@ -464,7 +485,7 @@ def _trending_via_youtube(geo: str) -> list[str]:
     """Fetch titles of the most popular YouTube videos in the given region."""
     if not config.YOUTUBE_API_KEY:
         raise RuntimeError("YOUTUBE_API_KEY not configured")
-    resp = requests.get(
+    response = requests.get(
         "https://www.googleapis.com/youtube/v3/videos",
         params={
             "part": "snippet",
@@ -475,38 +496,39 @@ def _trending_via_youtube(geo: str) -> list[str]:
         },
         timeout=10,
     )
-    resp.raise_for_status()
-    items = resp.json().get("items", [])
+    response.raise_for_status()
+    items = response.json().get("items", [])
     return [item["snippet"]["title"] for item in items if "snippet" in item]
 
 
 def _trending_via_pytrends(geo: str) -> list[str]:
     from pytrends.request import TrendReq  # type: ignore
-    pt = TrendReq(hl="sv-SE", tz=60)
-    df = pt.trending_searches(pn=geo.lower())
-    topics: list[str] = df.iloc[:10, 0].tolist()
-    return topics
+
+    pytrends = TrendReq(hl="sv-SE", tz=60)
+    dataframe = pytrends.trending_searches(pn=geo.lower())
+    return dataframe.iloc[:10, 0].tolist()
 
 
 def _trending_via_hackernews() -> list[str]:
     """Fetch top story titles from the public Hacker News API (no auth required)."""
     from concurrent.futures import ThreadPoolExecutor, as_completed
+
     base = "https://hacker-news.firebaseio.com/v0"
-    ids_resp = requests.get(f"{base}/topstories.json", timeout=10)
-    ids_resp.raise_for_status()
-    top_ids: list[int] = ids_resp.json()[:10]
+    ids_response = requests.get(f"{base}/topstories.json", timeout=10)
+    ids_response.raise_for_status()
+    top_ids: list[int] = ids_response.json()[:10]
 
     def _fetch_title(item_id: int) -> str | None:
-        r = requests.get(f"{base}/item/{item_id}.json", timeout=10)
-        r.raise_for_status()
-        return r.json().get("title")
+        response = requests.get(f"{base}/item/{item_id}.json", timeout=10)
+        response.raise_for_status()
+        return response.json().get("title")
 
     titles: list[str] = []
     with ThreadPoolExecutor(max_workers=5) as pool:
-        futures = {pool.submit(_fetch_title, i): i for i in top_ids}
-        for f in as_completed(futures):
+        futures = {pool.submit(_fetch_title, item_id): item_id for item_id in top_ids}
+        for future in as_completed(futures):
             try:
-                title = f.result()
+                title = future.result()
                 if title:
                     titles.append(title)
             except Exception:
@@ -516,17 +538,17 @@ def _trending_via_hackernews() -> list[str]:
 
 def _trending_via_google_rss(geo: str) -> list[str]:
     import xml.etree.ElementTree as ET
-    # The older daily path is more stable; try it first before the newer /trending/rss
+
     urls = [
         f"https://trends.google.com/trends/trendingsearches/daily/rss?geo={geo.upper()}",
         f"https://trends.google.com/trending/rss?geo={geo.upper()}",
     ]
     for url in urls:
         try:
-            resp = requests.get(url, timeout=10)
-            resp.raise_for_status()
-            root = ET.fromstring(resp.text)
-            titles = [el.text.strip() for el in root.findall(".//item/title") if el.text]
+            response = requests.get(url, timeout=10)
+            response.raise_for_status()
+            root = ET.fromstring(response.text)
+            titles = [text.strip() for element in root.findall(".//item/title") if (text := element.text)]
             if titles:
                 return titles
         except Exception:
@@ -536,13 +558,14 @@ def _trending_via_google_rss(geo: str) -> list[str]:
 
 # ── Script generation ─────────────────────────────────────────────────────────
 
-def generate_script(topic: "str | VideoIdea", format_name: str = "informative") -> Script:
+def generate_script(topic: str | VideoIdea, format_name: str = "informative") -> Script:
     """Call LLM via OpenRouter to generate a structured video script.
 
     topic may be a plain string or a VideoIdea (angle + emotion used to guide the script).
     format_name selects the script structure — see formats.py for available options.
     """
     import formats as fmt
+    from content_registry import build_avoidance_prompt, is_duplicate_candidate
 
     idea: VideoIdea | None = None
     if isinstance(topic, VideoIdea):
@@ -553,29 +576,37 @@ def generate_script(topic: "str | VideoIdea", format_name: str = "informative") 
     else:
         topic_str = topic
 
-    format_def = fmt.get(format_name)
+    if is_duplicate_candidate(topic=topic_str, fact_summary="", registry_path=config.CONTENT_REGISTRY_PATH):
+        raise ValueError(f"Topic already exists in registry: {topic_str}")
 
+    format_def = fmt.get(format_name)
     client = OpenAI(
         base_url="https://openrouter.ai/api/v1",
         api_key=config.OPENROUTER_API_KEY,
     )
-    logger.info("Generating script — topic: %s | format: %s | model: %s",
-                topic_str, format_name, config.OPENROUTER_MODEL)
+    logger.info(
+        "Generating script — topic: %s | format: %s | model: %s",
+        topic_str,
+        format_name,
+        config.OPENROUTER_MODEL,
+    )
 
-    user_content = f"Topic: {topic_str}"
+    system_prompt = f"{format_def['system_prompt']}\n\n{_METADATA_SUFFIX}"
+    avoidance_prompt = build_avoidance_prompt(registry_path=config.CONTENT_REGISTRY_PATH)
+    user_content = f"Topic: {topic_str}\n\n{avoidance_prompt}"
     if idea:
         user_content += (
-            f"\nAngle: {idea.angle}"
+            f"\n\nAngle: {idea.angle}"
             f"\nTarget emotion: {idea.target_emotion}"
             f"\nViewer question to answer: {idea.viewer_question}"
         )
 
     response = client.chat.completions.create(
         model=config.OPENROUTER_MODEL,
-        max_tokens=600,
+        max_tokens=1400,
         messages=[
-            {"role": "system", "content": format_def["system_prompt"]},
-            {"role": "user",   "content": user_content},
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_content},
         ],
     )
 
@@ -584,11 +615,34 @@ def generate_script(topic: "str | VideoIdea", format_name: str = "informative") 
     raw = re.sub(r"\s*```$", "", raw)
 
     data: dict = json.loads(raw)
-    kwargs = format_def["parse"](data)
+    parsed = format_def["parse"](data)
+    script = Script(
+        topic=str(data.get("title") or topic_str),
+        hook=parsed["hook"],
+        core=parsed.get("core", ""),
+        cta=parsed.get("cta", ""),
+        full_script=parsed["full_script"],
+        keywords=parsed.get("keywords", []) or [topic_str],
+        theme=str(data.get("theme") or f"{format_name} facts"),
+        fact_summary=str(data.get("fact_summary") or parsed["full_script"][:160]),
+        hook_angle=str(data.get("hook_angle") or parsed["hook"]),
+        clips=parsed.get("clips", []),
+        beats=parsed.get("beats", []),
+        format=format_name,
+        emphasis_words=parsed.get("emphasis_words", []),
+    )
 
-    script = Script(topic=topic_str, format=format_name, **kwargs)
-    if not script.keywords:
-        script.keywords = [topic_str]
-    logger.info("Script generated (%d words, format: %s).",
-                len(script.full_script.split()), format_name)
+    if is_duplicate_candidate(
+        topic=script.topic,
+        theme=script.theme,
+        fact_summary=script.fact_summary,
+        hook_angle=script.hook_angle,
+        registry_path=config.CONTENT_REGISTRY_PATH,
+    ):
+        raise ValueError(
+            "Generated script duplicates existing registry entry: "
+            f"{script.topic} / {script.fact_summary}"
+        )
+
+    logger.info("Script generated (%d words, format: %s).", len(script.full_script.split()), format_name)
     return script

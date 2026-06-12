@@ -1,10 +1,15 @@
 # Secrets & credentials
 .env
+.env.*
+!.env.example
 client_secrets.json
+client_secrets*.json
 youtube_token.json
+youtube_token*.json
+*.backup.json
 *.pickle
 
-# Generated output
+# Generated output / local artifacts
 output/
 
 # Python
