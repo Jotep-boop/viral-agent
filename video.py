@@ -1,8 +1,9 @@
-"""video.py — Fetch Pexels footage and assemble with audio via ffmpeg."""
+"""video.py — Fetch stock footage or AI footage and assemble with audio via ffmpeg."""
 from __future__ import annotations
 
 import logging
 import os
+import re
 import subprocess
 import tempfile
 from pathlib import Path
@@ -15,9 +16,36 @@ logger = logging.getLogger(__name__)
 
 PEXELS_VIDEO_URL = "https://api.pexels.com/videos/search"
 
+
+def _select_pexels_file(video: dict) -> str | None:
+    files = sorted(
+        [item for item in video["video_files"] if item.get("width", 0) <= 1080],
+        key=lambda item: item.get("width", 0),
+        reverse=True,
+    )
+    if not files:
+        return None
+    return files[0]["link"]
+
+
+def _search_pexels_videos(query: str, max_results: int = 1) -> list[dict]:
+    headers = {"Authorization": config.PEXELS_API_KEY}
+    params = {
+        "query": query,
+        "per_page": max_results,
+        "orientation": "portrait",
+        "size": "medium",
+    }
+    logger.info("Searching Pexels for: %s", query)
+    response = requests.get(PEXELS_VIDEO_URL, headers=headers, params=params, timeout=15)
+    response.raise_for_status()
+    return response.json().get("videos", [])
+
+
 def _ffmpeg_bin(name: str = "ffmpeg") -> str:
     """Return full path to ffmpeg/ffprobe, checking common locations."""
     import shutil
+
     path = shutil.which(name)
     if path:
         return path
@@ -29,38 +57,31 @@ def _ffmpeg_bin(name: str = "ffmpeg") -> str:
 
 # ── Pexels footage ────────────────────────────────────────────────────────────
 
-def fetch_footage(keywords: list[str], max_clips: int = 6) -> list[Path]:
+def fetch_footage(
+    keywords: list[str],
+    max_clips: int = 6,
+    clip_name_prefix: str = "",
+    clips_dir: Path | None = None,
+) -> list[Path]:
     """Download stock video clips from Pexels matching *keywords*."""
     query = " ".join(keywords[:3])
-    headers = {"Authorization": config.PEXELS_API_KEY}
-    params = {
-        "query": query,
-        "per_page": max_clips,
-        "orientation": "portrait",
-        "size": "medium",
-    }
-    logger.info("Searching Pexels for: %s", query)
-    resp = requests.get(PEXELS_VIDEO_URL, headers=headers, params=params, timeout=15)
-    resp.raise_for_status()
-    videos = resp.json().get("videos", [])
+    videos = _search_pexels_videos(query, max_results=max_clips)
 
     if not videos:
         raise RuntimeError(f"No Pexels footage found for query: {query!r}")
 
+    output_clips_dir = clips_dir or (config.OUTPUT_DIR / "clips")
+    output_clips_dir.mkdir(parents=True, exist_ok=True)
+
     paths: list[Path] = []
-    for i, video in enumerate(videos[:max_clips]):
-        # Pick highest-quality portrait file
-        files = sorted(
-            [f for f in video["video_files"] if f.get("width", 0) <= 1080],
-            key=lambda f: f.get("width", 0),
-            reverse=True,
-        )
-        if not files:
+    for index, video in enumerate(videos[:max_clips]):
+        url = _select_pexels_file(video)
+        if not url:
             continue
-        url = files[0]["link"]
-        dest = config.OUTPUT_DIR / "clips" / f"clip_{i:02d}.mp4"
-        _download_file(url, dest)
-        paths.append(dest)
+        filename = f"{clip_name_prefix}clip_{index:02d}.mp4" if clip_name_prefix else f"clip_{index:02d}.mp4"
+        destination = output_clips_dir / filename
+        _download_file(url, destination)
+        paths.append(destination)
 
     logger.info("Downloaded %d clip(s).", len(paths))
     return paths
@@ -68,37 +89,118 @@ def fetch_footage(keywords: list[str], max_clips: int = 6) -> list[Path]:
 
 def _download_file(url: str, dest: Path) -> None:
     logger.debug("Downloading %s → %s", url, dest)
-    with requests.get(url, stream=True, timeout=60) as r:
-        r.raise_for_status()
-        with open(dest, "wb") as f:
-            for chunk in r.iter_content(chunk_size=1 << 20):
-                f.write(chunk)
+    with requests.get(url, stream=True, timeout=60) as response:
+        response.raise_for_status()
+        with open(dest, "wb") as handle:
+            for chunk in response.iter_content(chunk_size=1 << 20):
+                handle.write(chunk)
+
+
+def fetch_footage_for_beats(
+    beats: list[dict],
+    fallback_keywords: list[str] | None = None,
+    clip_name_prefix: str = "",
+    clips_dir: Path | None = None,
+) -> list[Path]:
+    """Download one stock clip per beat so video content follows the narration order."""
+    if not beats:
+        raise RuntimeError("No beat metadata provided for stock footage")
+
+    output_clips_dir = clips_dir or (config.OUTPUT_DIR / "clips")
+    output_clips_dir.mkdir(parents=True, exist_ok=True)
+
+    fallback_query = " ".join((fallback_keywords or [])[:3]).strip()
+    paths: list[Path] = []
+
+    for index, beat in enumerate(beats):
+        queries = []
+        for candidate in [beat.get("query"), beat.get("stock_query"), beat.get("prompt"), fallback_query]:
+            text = str(candidate or "").strip()
+            if text and text not in queries:
+                queries.append(text)
+
+        video_url: str | None = None
+        for query in queries:
+            videos = _search_pexels_videos(query, max_results=1)
+            if not videos:
+                continue
+            video_url = _select_pexels_file(videos[0])
+            if video_url:
+                break
+
+        if not video_url:
+            raise RuntimeError(f"No Pexels footage found for beat {index}: {queries}")
+
+        filename = f"{clip_name_prefix}clip_{index:02d}.mp4" if clip_name_prefix else f"clip_{index:02d}.mp4"
+        destination = output_clips_dir / filename
+        _download_file(video_url, destination)
+        paths.append(destination)
+
+    logger.info("Downloaded %d beat-aligned clip(s).", len(paths))
+    return paths
 
 
 # ── fal.ai AI footage ─────────────────────────────────────────────────────────
 
-def generate_footage_ai(clips: list[dict]) -> list[Path]:
-    """Generate video clips via image-first pipeline: Flux stills → vision review → Kling i2v.
+def generate_footage_ai(
+    clips: list[dict],
+    clip_name_prefix: str = "",
+    clips_dir: Path | None = None,
+) -> list[Path]:
+    """Generate AI footage via image-first flow, with t2v fallback if needed."""
+    if not config.FAL_KEY:
+        raise RuntimeError("FAL_KEY not configured")
+    if not clips:
+        raise RuntimeError("No AI clip prompts were provided")
 
-    Falls back to text-to-video if image generation fails.
-    Runs up to 3 generations in parallel.
-    """
+    output_clips_dir = clips_dir or (config.OUTPUT_DIR / "clips")
+    output_clips_dir.mkdir(parents=True, exist_ok=True)
+
     os.environ.setdefault("FAL_KEY", config.FAL_KEY)
     try:
-        return _generate_footage_image_first(clips)
+        return _generate_footage_image_first(
+            clips,
+            clip_name_prefix=clip_name_prefix,
+            clips_dir=output_clips_dir,
+        )
     except Exception as exc:
-        logger.warning("Image-first pipeline failed (%s) — falling back to text-to-video.", exc)
-        return _generate_footage_text_to_video(clips)
+        logger.warning("Image-first fal.ai pipeline failed (%s) — falling back to text-to-video.", exc)
+        return _generate_footage_text_to_video(
+            clips,
+            clip_name_prefix=clip_name_prefix,
+            clips_dir=output_clips_dir,
+        )
 
 
-def _generate_still(i: int, clip: dict) -> tuple[int, dict, str]:
-    """Generate a single still image via Flux/schnell. Returns (index, clip, image_url)."""
+def _normalize_fal_duration(value: str | int | float | None) -> str:
+    """fal.ai Kling currently only accepts clip durations of 5 or 10 seconds."""
+    try:
+        seconds = int(value) if value is not None else 5
+    except (TypeError, ValueError):
+        seconds = 5
+    normalized = "5" if seconds <= 7 else "10"
+    if str(seconds) != normalized:
+        logger.info("Adjusted unsupported AI clip duration %s → %s for fal.ai", seconds, normalized)
+    return normalized
+
+
+def _fal_subscribe(model: str, arguments: dict) -> dict:
     import fal_client  # type: ignore
-    prompt = clip["prompt"]
-    logger.info("Generating still %d: %s", i, prompt[:70])
-    result = fal_client.subscribe(
+
+    return fal_client.subscribe(
+        model,
+        arguments=arguments,
+        start_timeout=config.FAL_START_TIMEOUT,
+        client_timeout=config.FAL_CLIENT_TIMEOUT,
+    )
+
+
+def _generate_still(index: int, clip: dict) -> tuple[int, dict, str]:
+    prompt = str(clip["prompt"]).strip()
+    logger.info("Generating still %d: %s", index, prompt[:120])
+    result = _fal_subscribe(
         config.FALAI_IMAGE_MODEL,
-        arguments={
+        {
             "prompt": prompt,
             "image_size": "portrait_4_3",
             "num_images": 1,
@@ -106,23 +208,20 @@ def _generate_still(i: int, clip: dict) -> tuple[int, dict, str]:
         },
     )
     image_url = result["images"][0]["url"]
-    logger.info("Still %d ready: %s", i, image_url[:60])
-    return i, clip, image_url
+    logger.info("Still %d ready → %s", index, image_url[:80])
+    return index, clip, image_url
 
 
 def _review_still(clip: dict, image_url: str) -> bool:
-    """Ask a vision model whether the still matches the intended clip prompt.
-
-    Returns True if the image is acceptable, False if it should be regenerated.
-    Uses a conservative threshold — only rejects clearly off-topic images.
-    """
+    """Use the vision-capable LLM as a soft filter for clearly off-topic stills."""
     try:
         from openai import OpenAI
+
         client = OpenAI(
             base_url="https://openrouter.ai/api/v1",
             api_key=config.OPENROUTER_API_KEY,
         )
-        prompt_text = clip["prompt"]
+        prompt_text = str(clip.get("prompt", "")).strip()
         response = client.chat.completions.create(
             model=config.OPENROUTER_MODEL,
             max_tokens=100,
@@ -138,143 +237,263 @@ def _review_still(clip: dict, image_url: str) -> bool:
                 ],
             }],
         )
-        answer = response.choices[0].message.content.strip().upper()
+        raw_answer = response.choices[0].message.content or ""
+        answer = raw_answer.strip().upper()
         ok = answer.startswith("YES")
         if not ok:
-            logger.warning("Still rejected by vision review: %s", answer[:80])
+            logger.warning("Still rejected by vision review: %s", answer[:120])
         return ok
     except Exception as exc:
         logger.warning("Vision review failed (%s) — accepting still.", exc)
         return True
 
 
-def _generate_footage_image_first(clips: list[dict]) -> list[Path]:
-    """Generate stills → vision review → animate to video for each clip."""
-    import fal_client  # type: ignore
+def _generate_footage_image_first(
+    clips: list[dict],
+    *,
+    clip_name_prefix: str = "",
+    clips_dir: Path | None = None,
+) -> list[Path]:
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
-    # Step 1: generate stills in parallel
+    output_clips_dir = clips_dir or (config.OUTPUT_DIR / "clips")
+    output_clips_dir.mkdir(parents=True, exist_ok=True)
+
     stills: dict[int, tuple[dict, str]] = {}
-    with ThreadPoolExecutor(max_workers=3) as pool:
-        futures = {pool.submit(_generate_still, i, c): i for i, c in enumerate(clips)}
-        for f in as_completed(futures):
-            i, clip, image_url = f.result()
-            stills[i] = (clip, image_url)
+    with ThreadPoolExecutor(max_workers=min(3, len(clips))) as pool:
+        futures = {pool.submit(_generate_still, index, clip): index for index, clip in enumerate(clips)}
+        for future in as_completed(futures):
+            index, clip, image_url = future.result()
+            stills[index] = (clip, image_url)
 
-    # Step 2: vision review — regenerate rejected stills once
-    for i in sorted(stills):
-        clip, image_url = stills[i]
-        if not _review_still(clip, image_url):
-            logger.info("Regenerating still %d after rejection...", i)
-            try:
-                _, clip, image_url = _generate_still(i, clip)
-                stills[i] = (clip, image_url)
-            except Exception as exc:
-                logger.warning("Regeneration of still %d failed (%s) — using original.", i, exc)
+    for index in sorted(stills):
+        clip, image_url = stills[index]
+        if _review_still(clip, image_url):
+            continue
+        logger.info("Regenerating still %d after review rejection.", index)
+        try:
+            _, clip, image_url = _generate_still(index, clip)
+            stills[index] = (clip, image_url)
+        except Exception as exc:
+            logger.warning("Still regeneration failed for clip %d (%s) — using first still.", index, exc)
 
-    # Step 3: animate stills to video in parallel
-    video_paths: dict[int, Path] = {}
-
-    def _animate(i: int, clip: dict, image_url: str) -> tuple[int, Path]:
-        dest = config.OUTPUT_DIR / "clips" / f"ai_clip_{i:02d}.mp4"
-        duration = str(min(int(clip.get("duration", 5)), 10))
-        logger.info("Animating still %d (%ss) → video", i, duration)
-        result = fal_client.subscribe(
+    def _animate(index: int, clip: dict, image_url: str) -> Path:
+        filename = f"{clip_name_prefix}ai_clip_{index:02d}.mp4" if clip_name_prefix else f"ai_clip_{index:02d}.mp4"
+        destination = output_clips_dir / filename
+        duration = _normalize_fal_duration(clip.get("duration", 5))
+        prompt = str(clip["prompt"]).strip()
+        logger.info("Animating still %d (%ss): %s", index, duration, prompt[:120])
+        result = _fal_subscribe(
             config.FALAI_I2V_MODEL,
-            arguments={
+            {
                 "image_url": image_url,
-                "prompt": clip["prompt"],
+                "prompt": prompt,
                 "duration": duration,
                 "aspect_ratio": "9:16",
             },
         )
         video_url = result["video"]["url"]
-        _download_file(video_url, dest)
-        logger.info("Animated clip %d done → %s", i, dest.name)
-        return i, dest
+        _download_file(video_url, destination)
+        logger.info("AI clip %d done → %s", index, destination.name)
+        return destination
 
-    with ThreadPoolExecutor(max_workers=3) as pool:
+    paths: dict[int, Path] = {}
+    with ThreadPoolExecutor(max_workers=min(3, len(clips))) as pool:
         futures = {
-            pool.submit(_animate, i, clip, image_url): i
-            for i, (clip, image_url) in stills.items()
+            pool.submit(_animate, index, clip, image_url): index
+            for index, (clip, image_url) in stills.items()
         }
-        for f in as_completed(futures):
-            i, path = f.result()
-            video_paths[i] = path
+        for future in as_completed(futures):
+            paths[futures[future]] = future.result()
 
-    ordered = [video_paths[i] for i in sorted(video_paths)]
+    ordered = [paths[index] for index in sorted(paths)]
     logger.info("Generated %d AI clip(s) via image-first pipeline.", len(ordered))
     return ordered
 
 
-def _generate_footage_text_to_video(clips: list[dict]) -> list[Path]:
-    """Fallback: generate clips directly from text prompts via Kling text-to-video."""
-    import fal_client  # type: ignore
+def _generate_footage_text_to_video(
+    clips: list[dict],
+    *,
+    clip_name_prefix: str = "",
+    clips_dir: Path | None = None,
+) -> list[Path]:
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
-    def _generate(i: int, clip: dict) -> tuple[int, Path]:
-        dest = config.OUTPUT_DIR / "clips" / f"ai_clip_{i:02d}.mp4"
-        prompt = clip["prompt"]
-        duration = str(min(int(clip.get("duration", 5)), 10))
-        logger.info("Generating t2v clip %d (%ss): %s", i, duration, prompt[:70])
-        result = fal_client.subscribe(
+    output_clips_dir = clips_dir or (config.OUTPUT_DIR / "clips")
+    output_clips_dir.mkdir(parents=True, exist_ok=True)
+
+    def _generate(index: int, clip: dict) -> Path:
+        filename = f"{clip_name_prefix}ai_clip_{index:02d}.mp4" if clip_name_prefix else f"ai_clip_{index:02d}.mp4"
+        destination = output_clips_dir / filename
+        prompt = str(clip["prompt"]).strip()
+        duration = _normalize_fal_duration(clip.get("duration", 5))
+        logger.info("Generating t2v clip %d (%ss): %s", index, duration, prompt[:120])
+        result = _fal_subscribe(
             config.FALAI_MODEL,
-            arguments={"prompt": prompt, "duration": duration, "aspect_ratio": "9:16"},
+            {"prompt": prompt, "duration": duration, "aspect_ratio": "9:16"},
         )
         video_url = result["video"]["url"]
-        _download_file(video_url, dest)
-        return i, dest
+        _download_file(video_url, destination)
+        logger.info("AI clip %d done → %s", index, destination.name)
+        return destination
 
     paths: dict[int, Path] = {}
-    with ThreadPoolExecutor(max_workers=3) as pool:
-        futures = {pool.submit(_generate, i, c): i for i, c in enumerate(clips)}
-        for f in as_completed(futures):
-            i, path = f.result()
-            paths[i] = path
+    with ThreadPoolExecutor(max_workers=min(3, len(clips))) as pool:
+        futures = {pool.submit(_generate, index, clip): index for index, clip in enumerate(clips)}
+        for future in as_completed(futures):
+            paths[futures[future]] = future.result()
 
-    ordered = [paths[i] for i in sorted(paths)]
-    logger.info("Generated %d AI clip(s) via text-to-video.", len(ordered))
+    ordered = [paths[index] for index in sorted(paths)]
+    logger.info("Generated %d AI clip(s) via text-to-video fallback.", len(ordered))
     return ordered
+
+
+def should_prefer_natural_audio(*texts: str) -> bool:
+    """Return True when real source audio is part of the hook."""
+    haystack = " ".join(texts).lower().strip()
+    if not haystack:
+        return False
+
+    sound_terms = [
+        r"\blyrebird\b",
+        r"\bmimic\w*\b",
+        r"\bcopy\w*\b",
+        r"\bsound\w*\b",
+        r"\bcall\w*\b",
+        r"\bsing\w*\b",
+        r"\bsong\w*\b",
+        r"\bvoice\w*\b",
+        r"\bchainsaw\w*\b",
+        r"\bcamera shutter\b",
+        r"\bcar alarm\w*\b",
+    ]
+    return any(re.search(pattern, haystack) for pattern in sound_terms)
+
+
+def overlay_natural_audio_sample(
+    video: Path,
+    sample_clip: Path,
+    *,
+    sample_duration: float = 2.6,
+    sample_volume: float = 0.9,
+    output_path: Path | None = None,
+) -> Path:
+    """Mix a short excerpt of original clip audio under the opening narration."""
+    out_path = output_path or video.with_name(f"{video.stem}_natural_audio{video.suffix}")
+
+    if not _has_audio_stream(sample_clip):
+        logger.info("Skipping natural audio overlay; clip has no audio stream: %s", sample_clip)
+        return video
+
+    command = [
+        _ffmpeg_bin(),
+        "-y",
+        "-i",
+        str(video),
+        "-i",
+        str(sample_clip),
+        "-filter_complex",
+        (
+            f"[1:a]atrim=0:{sample_duration:.3f},asetpts=PTS-STARTPTS,volume={sample_volume}[nat];"
+            "[0:a][nat]amix=inputs=2:duration=first:dropout_transition=0[aout]"
+        ),
+        "-map",
+        "0:v:0",
+        "-map",
+        "[aout]",
+        "-c:v",
+        "copy",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "192k",
+        "-shortest",
+        str(out_path),
+    ]
+    _run(command)
+    logger.info(
+        "Natural audio sample mixed from %s into %s (%.1fs).",
+        sample_clip.name,
+        out_path,
+        sample_duration,
+    )
+    return out_path
 
 
 # ── ffmpeg assembly ───────────────────────────────────────────────────────────
 
-def assemble_video(clips: list[Path], audio: Path, out_name: str = "raw.mp4") -> Path:
-    """Concatenate *clips* (looping if needed) and mix in *audio*."""
-    out_path = config.OUTPUT_DIR / "videos" / out_name
+def assemble_video(
+    clips: list[Path],
+    audio: Path,
+    out_name: str = "raw.mp4",
+    normalized_name_prefix: str = "",
+    videos_dir: Path | None = None,
+    normalized_clips_dir: Path | None = None,
+    segment_texts: list[str] | None = None,
+) -> Path:
+    """Concatenate *clips* and mix in *audio*.
 
-    # Get audio duration
+    When *segment_texts* is provided with the same length as *clips*, each clip is
+    stretched/trimmed to an estimated narration duration for that beat instead of
+    blindly looping the whole set.
+    """
+    output_videos_dir = videos_dir or (config.OUTPUT_DIR / "videos")
+    output_videos_dir.mkdir(parents=True, exist_ok=True)
+    out_path = output_videos_dir / out_name
+
     audio_duration = _probe_duration(audio)
     logger.info("Audio duration: %.2f s", audio_duration)
 
-    # Re-encode each clip to uniform portrait 1080×1920 @ 30fps
-    normalised: list[Path] = []
-    for i, clip in enumerate(clips):
-        norm = config.OUTPUT_DIR / "clips" / f"norm_{i:02d}.mp4"
-        _reencode_clip(clip, norm)
-        normalised.append(norm)
+    output_normalized_dir = normalized_clips_dir or (config.OUTPUT_DIR / "clips")
+    output_normalized_dir.mkdir(parents=True, exist_ok=True)
+    normalized: list[Path] = []
+    use_segment_timing = bool(segment_texts) and len(segment_texts or []) == len(clips)
+    target_durations = _estimate_segment_durations(segment_texts, audio_duration) if use_segment_timing else []
+    for index, clip in enumerate(clips):
+        filename = (
+            f"{normalized_name_prefix}norm_{index:02d}.mp4"
+            if normalized_name_prefix
+            else f"norm_{index:02d}.mp4"
+        )
+        normalized_path = output_normalized_dir / filename
+        if use_segment_timing:
+            _render_clip_to_duration(clip, normalized_path, target_durations[index])
+        else:
+            _reencode_clip(clip, normalized_path)
+        normalized.append(normalized_path)
 
-    # Loop clips until we have enough footage
-    looped = _loop_clips(normalised, audio_duration)
+    looped = normalized if use_segment_timing else _loop_clips(normalized, audio_duration)
 
-    # Write concat list
-    with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
-        for p in looped:
-            f.write(f"file '{p.resolve()}'\n")
-        concat_list = Path(f.name)
+    with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as handle:
+        for path in looped:
+            handle.write(f"file '{path.resolve()}'\n")
+        concat_list = Path(handle.name)
 
-    # Concat + add audio with loudness normalisation (-14 LUFS for Shorts)
-    cmd = [
-        _ffmpeg_bin(), "-y",
-        "-f", "concat", "-safe", "0", "-i", str(concat_list),
-        "-i", str(audio),
-        "-c:v", "libx264", "-preset", "fast", "-crf", "23",
-        "-af", "loudnorm=I=-14:TP=-1.5:LRA=11",
-        "-c:a", "aac", "-b:a", "128k",
+    command = [
+        _ffmpeg_bin(),
+        "-y",
+        "-f",
+        "concat",
+        "-safe",
+        "0",
+        "-i",
+        str(concat_list),
+        "-i",
+        str(audio),
+        "-c:v",
+        "libx264",
+        "-preset",
+        "fast",
+        "-crf",
+        "23",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "128k",
         "-shortest",
         str(out_path),
     ]
-    _run(cmd)
+    _run(command)
     concat_list.unlink(missing_ok=True)
     logger.info("Raw video: %s", out_path)
     return out_path
@@ -317,35 +536,97 @@ def _reencode_clip(src: Path, dst: Path) -> None:
         ])
 
 
+def _estimate_segment_durations(segment_texts: list[str] | None, audio_duration: float) -> list[float]:
+    if not segment_texts:
+        return []
+    word_counts = [max(1, len(str(text).split())) for text in segment_texts]
+    total_words = sum(word_counts)
+    raw = [(count / total_words) * audio_duration for count in word_counts]
+    minimum = 1.5
+    durations = [max(minimum, value) for value in raw]
+    scale = audio_duration / sum(durations)
+    return [value * scale for value in durations]
+
+
+def _render_clip_to_duration(src: Path, dst: Path, duration: float) -> None:
+    width, height = config.VIDEO_WIDTH, config.VIDEO_HEIGHT
+    scale_crop = (
+        f"scale={width}:{height}:force_original_aspect_ratio=increase,"
+        f"crop={width}:{height}"
+    )
+    command = [
+        _ffmpeg_bin(),
+        "-y",
+        "-stream_loop",
+        "-1",
+        "-i",
+        str(src),
+        "-t",
+        f"{duration:.3f}",
+        "-vf",
+        scale_crop,
+        "-r",
+        "30",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "ultrafast",
+        "-crf",
+        "28",
+        "-an",
+        str(dst),
+    ]
+    _run(command)
+
+
 def _probe_duration(path: Path) -> float:
     result = subprocess.run(
-        [
-            _ffmpeg_bin(), "-i", str(path),
-            "-f", "null", "-",
-        ],
-        capture_output=True, text=True,
+        [_ffmpeg_bin(), "-i", str(path), "-f", "null", "-"],
+        capture_output=True,
+        text=True,
     )
     import re
+
     match = re.search(r"Duration:\s*(\d+):(\d+):(\d+)\.(\d+)", result.stderr)
     if not match:
         raise RuntimeError(f"Could not determine duration of {path}")
-    h, m, s, cs = match.groups()
-    return int(h) * 3600 + int(m) * 60 + int(s) + int(cs) / 100
+    hours, minutes, seconds, centiseconds = match.groups()
+    return int(hours) * 3600 + int(minutes) * 60 + int(seconds) + int(centiseconds) / 100
+
+
+def _has_audio_stream(path: Path) -> bool:
+    result = subprocess.run(
+        [
+            _ffmpeg_bin("ffprobe"),
+            "-v",
+            "error",
+            "-select_streams",
+            "a:0",
+            "-show_entries",
+            "stream=codec_type",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+            str(path),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    return result.returncode == 0 and bool(result.stdout.strip())
 
 
 def _loop_clips(clips: list[Path], target_duration: float) -> list[Path]:
     """Return a list of clip paths whose total duration ≥ target_duration."""
-    durations = [_probe_duration(c) for c in clips]
+    durations = [_probe_duration(clip) for clip in clips]
     total = sum(durations)
     if total >= target_duration:
         return clips
     looped: list[Path] = []
-    acc = 0.0
-    idx = 0
-    while acc < target_duration:
-        looped.append(clips[idx % len(clips)])
-        acc += durations[idx % len(clips)]
-        idx += 1
+    accumulated = 0.0
+    index = 0
+    while accumulated < target_duration:
+        looped.append(clips[index % len(clips)])
+        accumulated += durations[index % len(clips)]
+        index += 1
     return looped
 
 

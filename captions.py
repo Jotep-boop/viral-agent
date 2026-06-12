@@ -29,13 +29,15 @@ def _ffmpeg_bin() -> str:
 
 def add_captions(video: Path, audio: Path, script_text: str = "",
                   out_name: str = "final.mp4",
-                  emphasis_words: list[str] | None = None) -> Path:
+                  emphasis_words: list[str] | None = None,
+                  output_path: Path | None = None) -> Path:
     """Burn karaoke-style captions into *video* with per-word colour highlighting.
 
     Active words are highlighted yellow; words in *emphasis_words* are highlighted
     orange so key terms stand out even more.
     """
-    out_path = config.OUTPUT_DIR / "videos" / out_name
+    out_path = output_path or (config.OUTPUT_DIR / "videos" / out_name)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
 
     logger.info("Transcribing audio with Whisper (%s)...", config.WHISPER_MODEL)
     words = _transcribe_words(audio, script_text)
@@ -57,7 +59,7 @@ def _transcribe_words(audio: Path, script_text: str = "") -> list[dict]:
     Whisper timing is always kept. If script_text is provided, Whisper's
     (possibly garbled) words are replaced with the original to avoid typos.
     """
-    import whisper  # type: ignore  # large import, loaded lazily
+    import whisper  # type: ignore
 
     model = whisper.load_model(config.WHISPER_MODEL)
     result = model.transcribe(
@@ -68,12 +70,12 @@ def _transcribe_words(audio: Path, script_text: str = "") -> list[dict]:
 
     raw: list[dict] = []
     for seg in result["segments"]:
-        for w in seg.get("words", []):
-            word = w.get("word", "").strip()
+        for word_info in seg.get("words", []):
+            word = word_info.get("word", "").strip()
             if not word:
                 continue
-            start = float(w["start"])
-            end   = max(float(w["end"]), start + 0.05)  # guard zero-duration words
+            start = float(word_info["start"])
+            end = max(float(word_info["end"]), start + 0.05)
             raw.append({"word": word, "start": start, "end": end})
 
     if not script_text or not raw:
@@ -81,16 +83,17 @@ def _transcribe_words(audio: Path, script_text: str = "") -> list[dict]:
 
     script_words = script_text.split()
     aligned: list[dict] = []
-    for i, w in enumerate(raw):
-        if i < len(script_words):
-            aligned.append({"word": script_words[i], "start": w["start"], "end": w["end"]})
+    for index, word_info in enumerate(raw):
+        if index < len(script_words):
+            aligned.append(
+                {"word": script_words[index], "start": word_info["start"], "end": word_info["end"]}
+            )
 
-    # If script has more words than Whisper detected, append with estimated timing
     if len(script_words) > len(raw) and raw:
-        t = raw[-1]["end"]
+        current_time = raw[-1]["end"]
         for word in script_words[len(raw):]:
-            aligned.append({"word": word, "start": t, "end": t + 0.25})
-            t += 0.25
+            aligned.append({"word": word, "start": current_time, "end": current_time + 0.25})
+            current_time += 0.25
 
     return aligned
 
@@ -107,10 +110,10 @@ def _write_ass_karaoke(words: list[dict], out_path: Path,
 
     for chunk_start in range(0, len(words), _CHUNK_SIZE):
         chunk = words[chunk_start:chunk_start + _CHUNK_SIZE]
-        for active_i, active_word in enumerate(chunk):
+        for active_index, active_word in enumerate(chunk):
             parts = []
             for j, w in enumerate(chunk):
-                if j == active_i:
+                if j == active_index:
                     colour = _EMPHASIS if w["word"].lower().strip(".,!?") in em else _HIGHLIGHT
                     parts.append(f"{{\\c{colour}\\b1}}{w['word']}{{\\r}}")
                 else:
@@ -161,8 +164,8 @@ def _burn_captions(video: Path, ass: Path, out: Path) -> None:
 
 
 def _fmt_ass_time(seconds: float) -> str:
-    h  = int(seconds // 3600)
-    m  = int((seconds % 3600) // 60)
-    s  = seconds % 60
-    cs = int((s % 1) * 100)
-    return f"{h}:{m:02d}:{int(s):02d}.{cs:02d}"
+    hours = int(seconds // 3600)
+    minutes = int((seconds % 3600) // 60)
+    whole_seconds = seconds % 60
+    centiseconds = int((whole_seconds % 1) * 100)
+    return f"{hours}:{minutes:02d}:{int(whole_seconds):02d}.{centiseconds:02d}"

@@ -1,10 +1,20 @@
 """config.py — Load and validate all environment variables."""
+from __future__ import annotations
+
 import os
 import shutil
 from pathlib import Path
+
 from dotenv import load_dotenv
 
-load_dotenv()
+BASE_DIR: Path = Path(__file__).resolve().parent
+load_dotenv(BASE_DIR / ".env")
+
+
+def _resolve_repo_path(value: str) -> Path:
+    path = Path(value)
+    return path if path.is_absolute() else BASE_DIR / path
+
 
 # ── Ensure ffmpeg is on PATH ─────────────────────────────────────────────────
 if not shutil.which("ffmpeg"):
@@ -12,16 +22,21 @@ if not shutil.which("ffmpeg"):
     if (_ffmpeg_candidate / "ffmpeg.exe").exists():
         os.environ["PATH"] = str(_ffmpeg_candidate) + os.pathsep + os.environ.get("PATH", "")
 
+
 # ── API keys ──────────────────────────────────────────────────────────────────
 OPENROUTER_API_KEY: str = os.environ.get("OPENROUTER_API_KEY", "")
 OPENROUTER_MODEL: str = os.environ.get("OPENROUTER_MODEL", "anthropic/claude-sonnet-4")
 ELEVENLABS_API_KEY: str = os.environ.get("ELEVENLABS_API_KEY", "")
 ELEVENLABS_VOICE_ID: str = os.environ.get("ELEVENLABS_VOICE_ID", "CwhRBWXzGAHq8TQ4Fs17")
 PEXELS_API_KEY: str = os.environ.get("PEXELS_API_KEY", "")
-YOUTUBE_CLIENT_SECRETS: str = os.environ.get("YOUTUBE_CLIENT_SECRETS", "client_secrets.json")
+YOUTUBE_CLIENT_SECRETS: str = str(
+    _resolve_repo_path(os.environ.get("YOUTUBE_CLIENT_SECRETS", "client_secrets.json"))
+)
 YOUTUBE_API_KEY: str = os.environ.get("YOUTUBE_API_KEY", "")
 FAL_KEY: str = os.environ.get("FAL_KEY", "")
 FALAI_MODEL: str = os.environ.get("FALAI_MODEL", "fal-ai/kling-video/v1.6/standard/text-to-video")
+FAL_START_TIMEOUT: float = float(os.environ.get("FAL_START_TIMEOUT", 120))
+FAL_CLIENT_TIMEOUT: float = float(os.environ.get("FAL_CLIENT_TIMEOUT", 600))
 DEFAULT_FORMAT: str = os.environ.get("DEFAULT_FORMAT", "informative")
 
 # ── Channel niche ─────────────────────────────────────────────────────────────
@@ -41,11 +56,15 @@ FALAI_IMAGE_MODEL: str = os.environ.get("FALAI_IMAGE_MODEL", "fal-ai/flux/schnel
 FALAI_I2V_MODEL: str = os.environ.get("FALAI_I2V_MODEL", "fal-ai/kling-video/v1.6/standard/image-to-video")
 
 # ── Pipeline settings ─────────────────────────────────────────────────────────
-OUTPUT_DIR: Path = Path(os.environ.get("OUTPUT_DIR", "output"))
+OUTPUT_DIR: Path = _resolve_repo_path(os.environ.get("OUTPUT_DIR", "output"))
+CONTENT_REGISTRY_PATH: Path = _resolve_repo_path(
+    os.environ.get("CONTENT_REGISTRY_PATH", "data/content_registry.json")
+)
 VIDEO_WIDTH: int = int(os.environ.get("VIDEO_WIDTH", 1080))
 VIDEO_HEIGHT: int = int(os.environ.get("VIDEO_HEIGHT", 1920))
 MAX_VIDEO_DURATION: int = int(os.environ.get("MAX_VIDEO_DURATION", 60))
 WHISPER_MODEL: str = os.environ.get("WHISPER_MODEL", "base")
+
 
 # ── Auto-create output dirs ───────────────────────────────────────────────────
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -65,7 +84,7 @@ def validate_config(skip_youtube: bool = False) -> None:
         required["YOUTUBE_CLIENT_SECRETS (file must exist)"] = (
             YOUTUBE_CLIENT_SECRETS if Path(YOUTUBE_CLIENT_SECRETS).exists() else ""
         )
-    missing = [k for k, v in required.items() if not v]
+    missing = [key for key, value in required.items() if not value]
     if missing:
         raise ValueError(
             f"Missing required config: {', '.join(missing)}\n"
