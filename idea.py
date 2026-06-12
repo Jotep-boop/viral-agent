@@ -100,11 +100,15 @@ Rules:
 - Each angle must be a short punchy phrase that could work as the opening sentence
 - Prefer angles that reference specific numbers, comparisons, or extreme scales
 
+PROVEN WINNING FORMULA for this channel: [familiar object] + [sounds impossible/alive]
+Examples of the style that works: "concrete that bleeds and heals itself", "metal that remembers its shape"
+Prioritise ideas that follow this exact formula.
+
 Among the {count} ideas, cover AT LEAST ONE of each psychological archetype:
-- "Hidden truth" — something most people don't know or that seems impossible
-- "Personal threat" — directly impacts the viewer's body, survival, or daily life
-- "Shocking scale" — uses extreme numbers or comparisons to create a jaw-drop moment
-- "Myth destroyed" — a widely-held belief that science proves wrong
+- "Impossible object" — everyday material/substance with a property that sounds made-up (HIGHEST PRIORITY)
+- "Hidden threat" — something in the viewer's environment that is secretly extreme or dangerous
+- "Shocking scale" — extreme numbers or comparisons that reframe something familiar
+- "Myth destroyed" — a widely-held belief that science proves wrong with a physical demonstration
 
 Return ONLY a valid JSON array of exactly {count} objects:
 [
@@ -117,15 +121,22 @@ Return ONLY a valid JSON array of exactly {count} objects:
 ]"""
 
 _IDEA_SCORING_PROMPT = """\
-You are a viral content analyst scoring YouTube Shorts ideas for a mind-blowing science channel.
+You are a viral content analyst scoring YouTube Shorts ideas for a materials science channel.
 Channel niche: {niche} — {niche_desc}.
 
-Score each idea 0-100 on these criteria (equal weight):
-1. hook_strength — how scroll-stopping in the first 3 seconds?
-2. curiosity_gap — does it leave a burning unanswered question?
-3. visual_payoff — can the FIRST clip show the core claim directly (not context)?
-4. comment_potential — will people argue, react, or comment their answer?
-5. niche_fit — does this fit the channel's science niche? Off-topic ideas score 0-20 here.
+PROVEN WINNING PATTERN on this channel: familiar everyday object + property that sounds impossible
+or alive (e.g. "concrete that heals itself", "metal that remembers its shape").
+Heavily reward ideas that match this pattern.
+
+Score each idea 0-100 on these criteria:
+1. object_hook (25 pts) — does it feature a specific, familiar object with an impossible-sounding property?
+   Full points: concrete/metal/glass/ice/sound + alien behavior.
+   Partial: abstract science concept without a graspable object.
+   Zero: animal facts, general space trivia, nature lists.
+2. hook_strength (25 pts) — how scroll-stopping in the first 3 seconds?
+3. curiosity_gap (20 pts) — does it leave a burning unanswered question?
+4. visual_payoff (20 pts) — can the FIRST clip show the core claim directly?
+5. comment_potential (10 pts) — will people argue, share, or react?
 
 Return ONLY valid JSON:
 {{
