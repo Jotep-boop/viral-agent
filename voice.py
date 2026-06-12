@@ -11,9 +11,10 @@ import config
 logger = logging.getLogger(__name__)
 
 
-def text_to_speech(text: str, filename: str = "voiceover.mp3") -> Path:
-    """Generate speech audio from *text* and save to output/audio/<filename>."""
-    out_path = config.OUTPUT_DIR / "audio" / filename
+def text_to_speech(text: str, filename: str = "voiceover.mp3", output_path: Path | None = None) -> Path:
+    """Generate speech audio from *text* and save to a target mp3 path."""
+    out_path = output_path or (config.OUTPUT_DIR / "audio" / filename)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     client = ElevenLabs(api_key=config.ELEVENLABS_API_KEY)
 
     logger.info("Generating TTS for %d characters...", len(text))

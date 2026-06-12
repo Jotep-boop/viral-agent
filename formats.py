@@ -146,11 +146,13 @@ Return ONLY valid JSON:
   "keywords": ["fallback1", "fallback2", "fallback3"],
   "emphasis_words": ["word1", "word2", "word3"],
   "clips": [
-    {{"prompt": "scene matching item 5, portrait 9:16", "duration": 5}},
-    {{"prompt": "scene matching item 4", "duration": 5}},
-    {{"prompt": "scene matching item 3", "duration": 5}},
-    {{"prompt": "scene matching item 2", "duration": 5}},
-    {{"prompt": "most dramatic scene for the Number 1 reveal", "duration": 6}}
+    {{"prompt": "hook shot establishing the impossible-world feeling of the list", "duration": 5, "stock_query": "surreal natural landscape"}},
+    {{"prompt": "scene matching item 5, portrait 9:16", "duration": 5, "stock_query": "specific place or visual subject for item 5"}},
+    {{"prompt": "scene matching item 4", "duration": 5, "stock_query": "specific place or visual subject for item 4"}},
+    {{"prompt": "scene matching item 3", "duration": 5, "stock_query": "specific place or visual subject for item 3"}},
+    {{"prompt": "scene matching item 2", "duration": 5, "stock_query": "specific place or visual subject for item 2"}},
+    {{"prompt": "most dramatic scene for the Number 1 reveal", "duration": 6, "stock_query": "specific place or visual subject for item 1"}},
+    {{"prompt": "closing shot inviting viewer reaction", "duration": 4, "stock_query": "traveler awe landscape"}}
   ]
 }}
 emphasis_words: 3-6 most surprising/important words from the script for caption highlighting.
@@ -396,11 +398,20 @@ def _parse_simple(data: dict) -> dict:
 def _parse_top5(data: dict) -> dict:
     items = data.get("items", [])
     core = " | ".join(f"#{i['rank']} {i['title']}" for i in items)
+    beats = [{"text": data["hook"], "query": "surreal natural landscape"}]
+    for item in items:
+        title = str(item.get("title", "")).strip()
+        description = str(item.get("description", "")).strip()
+        rank = item.get("rank", "")
+        beat_text = f"Number {rank}: {title}. {description}".strip()
+        beats.append({"text": beat_text, "query": title or description})
+    beats.append({"text": data["cta"], "query": "traveler awe landscape"})
     return {
         "hook": data["hook"], "core": core, "cta": data["cta"],
         "full_script": data["full_script"],
         "keywords": data.get("keywords", []), "clips": data.get("clips", []),
         "emphasis_words": _ew(data),
+        "beats": beats,
     }
 
 

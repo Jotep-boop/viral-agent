@@ -58,48 +58,57 @@ def log_manual(
     topic: str,
     video_id: str,
     url: str,
-    views: int,
     *,
+    views: int,
+    likes: int = 0,
+    comments: int = 0,
     angle: str = "",
     format: str = "informative",
     hook: str = "",
-    likes: int = 0,
-    comments: int = 0,
-    uploaded_at: str = "",
+    uploaded_at: str | None = None,
+    word_count: int = 0,
+    duration: float = 0.0,
 ) -> None:
-    """Backfill a manually-uploaded video with known stats into the performance log.
+    """Insert or update a manual performance entry with known stats.
 
-    Use this to seed the feedback loop with videos uploaded outside the pipeline.
+    Useful for backfilling historical winners into the feedback loop so future
+    idea generation can learn from what already performed on-channel.
     """
     entries = _load()
-    # Don't duplicate
-    existing_ids = {e.get("video_id") for e in entries}
-    if video_id in existing_ids:
-        logger.info("video_id %s already in log — skipping.", video_id)
-        return
     now = _now()
-    like_rate = round(likes / views, 4) if views > 0 and likes > 0 else None
-    comment_rate = round(comments / views, 4) if views > 0 and comments > 0 else None
-    entries.append({
+    uploaded_value = uploaded_at or now
+    record = {
         "topic": topic,
         "angle": angle,
         "format": format,
         "hook": hook,
-        "word_count": 0,
-        "duration": 0.0,
+        "word_count": word_count,
+        "duration": duration,
         "video_id": video_id,
         "url": url,
-        "uploaded_at": uploaded_at or now,
+        "uploaded_at": uploaded_value,
         "views": views,
         "likes": likes,
         "comments": comments,
         "views_per_hour": None,
-        "like_rate": like_rate,
-        "comment_rate": comment_rate,
+        "like_rate": round(likes / views, 4) if views > 0 else None,
+        "comment_rate": round(comments / views, 4) if views > 0 else None,
         "stats_fetched_at": now,
-    })
+    }
+    if views > 0:
+        hours = _hours_since(uploaded_value)
+        if hours > 0:
+            record["views_per_hour"] = round(views / hours, 2)
+
+    for i, entry in enumerate(entries):
+        if entry.get("video_id") == video_id:
+            entries[i] = {**entry, **record}
+            break
+    else:
+        entries.append(record)
+
     _save(entries)
-    logger.info("Manually logged: %s → %s (%d views)", topic, video_id, views)
+    logger.info("Logged manual performance entry: %s → %s", topic, video_id)
 
 
 def _is_stale(entry: dict) -> bool:

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 import re
 import subprocess
 import sys
@@ -17,19 +18,7 @@ mcp = FastMCP("viral-agent")
 
 @mcp.tool()
 def generate_ideas(topic: str = "", count: int = 5) -> str:
-    """Generate and rank viral video ideas for a topic (or auto-detect trending topic).
-
-    Use this BEFORE generate_video to let you choose the best angle.
-    Returns ranked ideas — pick the one you like and pass its topic+angle to generate_video.
-
-    Args:
-        topic: The subject to build ideas around. If empty, auto-detects a trending topic.
-        count:  Number of idea variations to generate (default: 5, max: 10)
-
-    Returns:
-        JSON array of VideoIdea objects, each with:
-          topic, angle, format, target_emotion, viewer_question
-    """
+    """Generate and rank viral video ideas for a topic (or auto-detect trending topic)."""
     try:
         import config  # noqa
         from idea import get_trending_topic as _get_topic, run_idea_tournament
@@ -53,118 +42,190 @@ def generate_ideas(topic: str = "", count: int = 5) -> str:
 
 @mcp.tool()
 def get_performance_insights() -> str:
-    """Get performance insights from previous videos to inform content decisions.
-
-    Use this to understand which formats, hooks, and angles have performed best.
-    Returns format breakdown with avg views, like rates, and top-performing hooks.
-
-    Returns:
-        JSON with format_breakdown (avg views/rates per format),
-        top_hooks (hooks from best-performing videos),
-        overall_avg_views.
-    """
+    """Get performance insights from previous videos to inform content decisions."""
     try:
         import tracker
+
         return json.dumps(tracker.get_performance_insights())
-    except Exception as e:
-        return json.dumps({"error": str(e), "stage": "performance_insights"})
+    except Exception as exc:
+        return json.dumps({"error": str(exc), "stage": "performance_insights"})
 
 
 @mcp.tool()
 def get_trending_topic(geo: str = "SE") -> str:
-    """Get a currently trending topic suitable for a viral video.
-
-    Args:
-        geo: Country code for trend detection (default: SE for Sweden)
-
-    Returns:
-        JSON with topic and source.
-    """
+    """Get a currently trending topic suitable for a viral video."""
     try:
-        import config  # noqa: F811
         from idea import get_trending_topic as _get_topic
 
         topic = _get_topic(geo=geo)
         return json.dumps({"topic": topic, "source": "auto"})
-    except Exception as e:
-        return json.dumps({"error": str(e), "stage": "trending_topic"})
+    except Exception as exc:
+        return json.dumps({"error": str(exc), "stage": "trending_topic"})
 
 
 @mcp.tool()
 def list_formats() -> str:
-    """List available video formats and their descriptions.
-
-    Use this to discover what formats exist before calling generate_video.
-    Pass the format name to generate_video's `format` parameter.
-
-    Returns:
-        JSON object mapping format name → description.
-    """
+    """List available video formats and their descriptions."""
     try:
         import formats as fmt
-        return json.dumps({
-            name: f["description"]
-            for name, f in fmt.FORMATS.items()
-        })
-    except Exception as e:
-        return json.dumps({"error": str(e)})
+
+        return json.dumps({name: entry["description"] for name, entry in fmt.FORMATS.items()})
+    except Exception as exc:
+        return json.dumps({"error": str(exc)})
 
 
 @mcp.tool()
-def generate_video(topic: str, format: str = "informative",
-                   angle: str = "", dry_run: bool = True) -> str:
-    """Generate a viral short-form video from a topic.
-
-    Runs the full pipeline: idea → script → TTS → AI video clips → assembly → captions.
-    Use generate_ideas() first to pick the best angle, or provide one directly.
-    Use list_formats() to see available formats.
-
-    Args:
-        topic:   The video topic (e.g. "black holes", "animal facts")
-        format:  Video format — "informative" (default) or "top5", "scary", etc.
-                 Use list_formats() to see all options.
-        angle:   Optional specific angle from generate_ideas() to steer the script.
-                 If empty, the pipeline auto-generates the best angle.
-        dry_run: If True, skip YouTube upload (default: True)
-
-    Returns:
-        JSON with video_path, title, script, angle, format, keywords,
-        duration_seconds, and optionally youtube_url.
-    """
+def generate_video(
+    topic: str,
+    format: str = "informative",
+    angle: str = "",
+    dry_run: bool = True,
+    pillar: str | None = None,
+    hook_type: str | None = None,
+) -> str:
+    """Generate a viral short-form video from a topic."""
     try:
         import config
+        from artifact_paths import reserve_artifact_paths
+        from captions import add_captions
+        from content_registry import append_registry_entry, build_registry_entry
+        from idea import VideoIdea, generate_idea, generate_metadata, generate_script
+        from manifest import probe_duration_seconds, write_run_manifest
+        from publish_tracking import track_successful_upload
+        import tracker
+        from video import assemble_video, generate_footage_ai
+        from voice import text_to_speech
+
         config.validate_config(skip_youtube=dry_run)
 
-        from idea import generate_idea, generate_script, generate_metadata, VideoIdea
-        from voice import text_to_speech
-        from video import generate_footage_ai, assemble_video
-        from captions import add_captions
+        artifact_paths = reserve_artifact_paths(
+            config.OUTPUT_DIR,
+            registry_path=config.CONTENT_REGISTRY_PATH,
+        )
+        registry_id = artifact_paths.registry_id
 
-        from datetime import datetime
-        tag = datetime.now().strftime("%Y%m%d_%H%M%S")
-
-        # If caller provided a pre-chosen angle, build a VideoIdea stub; else auto-generate
         if angle:
             idea = VideoIdea(
-                topic=topic, angle=angle, format=format,
-                target_emotion="curiosity", viewer_question="",
+                topic=topic,
+                angle=angle,
+                format=format,
+                target_emotion="curiosity",
+                viewer_question="",
             )
         else:
             idea = generate_idea(topic, format)
 
         script = generate_script(idea)
-        audio = text_to_speech(script.full_script)
+        audio = text_to_speech(script.full_script, output_path=artifact_paths.audio)
 
         if not config.FAL_KEY:
             return json.dumps({"error": "FAL_KEY not configured", "stage": "footage"})
-        clips = generate_footage_ai(script.clips)
+        if not script.clips:
+            return json.dumps({
+                "error": "Script contains no clip prompts. Re-run or check the format prompt for clip generation.",
+                "stage": "footage",
+            })
+        clips = generate_footage_ai(script.clips, clips_dir=artifact_paths.clips_dir)
 
-        raw_video = assemble_video(clips, audio, out_name=f"raw_{tag}.mp4")
-        final_video = add_captions(raw_video, audio, script_text=script.full_script,
-                                    out_name=f"final_{tag}.mp4",
-                                    emphasis_words=script.emphasis_words)
+        raw_video = assemble_video(
+            clips,
+            audio,
+            out_name=artifact_paths.raw_video.name,
+            videos_dir=artifact_paths.videos_dir,
+            normalized_clips_dir=artifact_paths.clips_dir,
+            segment_texts=[beat.get("text", "") for beat in script.beats] if len(script.beats) == len(clips) else None,
+        )
+        final_video = add_captions(
+            raw_video,
+            audio,
+            script_text=script.full_script,
+            emphasis_words=getattr(script, "emphasis_words", None),
+            output_path=artifact_paths.final_video,
+        )
 
+        registry_entry = build_registry_entry(
+            topic=script.topic,
+            theme=script.theme,
+            fact_summary=script.fact_summary,
+            hook_angle=script.hook_angle,
+            keywords=script.keywords,
+            format_id=script.format,
+            pillar=pillar,
+            hook_type=hook_type,
+            status="produced-dry-run" if dry_run else "produced",
+            registry_path=config.CONTENT_REGISTRY_PATH,
+            entry_id=registry_id,
+        )
+        append_registry_entry(registry_entry, registry_path=config.CONTENT_REGISTRY_PATH)
+
+        duration_seconds = probe_duration_seconds(final_video)
         metadata = generate_metadata(script, idea)
+        youtube_url = None
+        video_id = None
+        manifest_path: str | None = None
+
+        if dry_run:
+            manifest = write_run_manifest(
+                paths=artifact_paths,
+                topic=script.topic,
+                theme=script.theme,
+                pillar=pillar,
+                hook_type=hook_type,
+                fact_summary=script.fact_summary,
+                hook_angle=script.hook_angle,
+                keywords=script.keywords,
+                status="produced-dry-run",
+                script_text=script.full_script,
+                duration_seconds=duration_seconds,
+            )
+            manifest_path = str(manifest.resolve())
+        else:
+            from publish import upload_to_youtube as _upload
+
+            youtube_url = _upload(
+                final_video,
+                title=metadata.title,
+                description=metadata.description,
+                tags=script.keywords + metadata.hashtags,
+            )
+            video_id = youtube_url.split("v=")[-1] if "v=" in youtube_url else ""
+            manifest = write_run_manifest(
+                paths=artifact_paths,
+                topic=script.topic,
+                theme=script.theme,
+                pillar=pillar,
+                hook_type=hook_type,
+                fact_summary=script.fact_summary,
+                hook_angle=script.hook_angle,
+                keywords=script.keywords,
+                status="uploaded",
+                script_text=script.full_script,
+                duration_seconds=duration_seconds,
+                youtube_url=youtube_url,
+                video_id=video_id,
+            )
+            tracking = track_successful_upload(
+                video_path=final_video,
+                youtube_url=youtube_url,
+                registry_path=config.CONTENT_REGISTRY_PATH,
+            )
+            video_id = str(tracking["video_id"] or video_id)
+            manifest_path = str(tracking["manifest_path"] or manifest.resolve())
+            try:
+                if video_id:
+                    tracker.log_run(
+                        topic=script.topic,
+                        video_id=video_id,
+                        url=youtube_url,
+                        angle=idea.angle,
+                        format=script.format,
+                        hook=script.hook,
+                        word_count=len(script.full_script.split()),
+                        duration=duration_seconds,
+                    )
+            except Exception:
+                pass
+
         result = {
             "video_path": str(final_video.resolve()),
             "title": metadata.title,
@@ -174,151 +235,118 @@ def generate_video(topic: str, format: str = "informative",
             "keywords": script.keywords,
             "hashtags": metadata.hashtags,
             "pinned_comment": metadata.pinned_comment,
-            "duration_seconds": _get_duration(final_video),
-            "youtube_url": None,
+            "duration_seconds": duration_seconds,
+            "youtube_url": youtube_url,
+            "registry_id": registry_entry["id"],
+            "fact_summary": script.fact_summary,
+            "theme": script.theme,
+            "pillar": pillar,
+            "hook_type": hook_type,
+            "manifest_path": manifest_path,
         }
-
-        if not dry_run:
-            from publish import upload_to_youtube as _upload
-            import tracker
-            url = _upload(
-                final_video,
-                title=metadata.title,
-                description=metadata.description,
-                tags=script.keywords + metadata.hashtags,
-            )
-            result["youtube_url"] = url
-            try:
-                from urllib.parse import urlparse, parse_qs
-                video_id = parse_qs(urlparse(url).query).get("v", [None])[0]
-                if video_id:
-                    tracker.log_run(
-                        topic=script.topic, video_id=video_id, url=url,
-                        angle=idea.angle, format=script.format, hook=script.hook,
-                        word_count=len(script.full_script.split()),
-                        duration=result["duration_seconds"],
-                    )
-            except Exception:
-                pass
+        if video_id:
+            result["video_id"] = video_id
 
         return json.dumps(result)
-    except Exception as e:
-        return json.dumps({"error": str(e), "stage": _guess_stage(e)})
+    except Exception as exc:
+        return json.dumps({"error": str(exc), "stage": _guess_stage(exc)})
 
 
 @mcp.tool()
-def upload_to_youtube(video_path: str, title: str,
-                      description: str = "", tags: str = "") -> str:
-    """Upload a previously generated video to YouTube.
-
-    Use this after generate_video to publish when ready.
-
-    Args:
-        video_path: Absolute path to the video file
-        title: Video title (max 100 characters)
-        description: Video description
-        tags: Comma-separated tags (e.g. "science,facts,viral")
-
-    Returns:
-        JSON with url and video_id.
-    """
+def upload_to_youtube(video_path: str, title: str, description: str = "", tags: str = "") -> str:
+    """Upload a previously generated video to YouTube."""
     try:
-        from pathlib import Path
         import config
+        from publish_tracking import track_successful_upload
+
         config.validate_config(skip_youtube=False)
 
         path = Path(video_path)
         if not path.exists():
-            return json.dumps({"error": f"Video file not found: {video_path}",
-                               "stage": "upload"})
+            return json.dumps({"error": f"Video file not found: {video_path}", "stage": "upload"})
 
         from publish import upload_to_youtube as _upload
 
-        tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else []
+        tag_list = [tag.strip() for tag in tags.split(",") if tag.strip()] if tags else []
         url = _upload(path, title=title[:100], description=description, tags=tag_list)
-        video_id = url.split("v=")[-1] if "v=" in url else ""
+        tracking = track_successful_upload(
+            video_path=path,
+            youtube_url=url,
+            registry_path=config.CONTENT_REGISTRY_PATH,
+        )
 
-        return json.dumps({"url": url, "video_id": video_id})
-    except Exception as e:
-        return json.dumps({"error": str(e), "stage": "upload"})
+        return json.dumps(
+            {
+                "url": url,
+                "video_id": tracking["video_id"] or (url.split("v=")[-1] if "v=" in url else ""),
+                "registry_id": tracking["registry_id"],
+                "manifest_path": tracking["manifest_path"],
+                "published_at": tracking["published_at"],
+            }
+        )
+    except Exception as exc:
+        return json.dumps({"error": str(exc), "stage": "upload"})
 
 
 @mcp.tool()
 def get_channel_stats() -> str:
-    """Get YouTube channel statistics.
-
-    Returns:
-        JSON with channel_title, subscribers, total_views, video_count.
-    """
+    """Get YouTube channel statistics."""
     try:
-        import config  # noqa: F811
         from publish import get_channel_stats as _get_stats
+
         return json.dumps(_get_stats())
-    except Exception as e:
-        return json.dumps({"error": str(e), "stage": "analytics"})
+    except Exception as exc:
+        return json.dumps({"error": str(exc), "stage": "analytics"})
 
 
 @mcp.tool()
 def get_video_stats(video_id: str) -> str:
-    """Get statistics for a specific YouTube video.
-
-    Args:
-        video_id: The YouTube video ID (e.g. "dQw4w9WgXcQ")
-
-    Returns:
-        JSON with title, views, likes, comments, published_at.
-    """
+    """Get statistics for a specific YouTube video."""
     try:
-        import config  # noqa: F811
         from publish import get_video_stats as _get_stats
+
         return json.dumps(_get_stats(video_id))
-    except Exception as e:
-        return json.dumps({"error": str(e), "stage": "analytics"})
+    except Exception as exc:
+        return json.dumps({"error": str(exc), "stage": "analytics"})
 
 
 @mcp.tool()
 def list_recent_videos(max_results: int = 10) -> str:
-    """List recent uploaded videos with their performance stats.
-
-    Args:
-        max_results: Number of videos to return (default: 10, max: 50)
-
-    Returns:
-        JSON array of videos with video_id, title, published_at, views, likes, comments.
-    """
+    """List recent uploaded videos with their performance stats."""
     try:
-        import config  # noqa: F811
         from publish import list_recent_videos as _list_videos
+
         return json.dumps(_list_videos(min(max_results, 50)))
-    except Exception as e:
-        return json.dumps({"error": str(e), "stage": "analytics"})
+    except Exception as exc:
+        return json.dumps({"error": str(exc), "stage": "analytics"})
 
 
-def _get_duration(video_path) -> float:
+def _get_duration(video_path: Path) -> float:
     from video import _ffmpeg_bin
+
     result = subprocess.run(
         [_ffmpeg_bin(), "-i", str(video_path), "-f", "null", "-"],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
     )
     match = re.search(r"Duration:\s*(\d+):(\d+):(\d+)\.(\d+)", result.stderr)
     if not match:
         return 0.0
-    h, m, s, cs = match.groups()
-    return int(h) * 3600 + int(m) * 60 + int(s) + int(cs) / 100
+    hours, minutes, seconds, centiseconds = match.groups()
+    return int(hours) * 3600 + int(minutes) * 60 + int(seconds) + int(centiseconds) / 100
 
 
 def _guess_stage(exc: Exception) -> str:
-    tb_text = "".join(traceback.format_exception(type(exc), exc,
-                                                  exc.__traceback__)).lower()
+    traceback_text = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)).lower()
     for stage, markers in [
-        ("script", ["idea.py", "generate_script", "openrouter"]),
+        ("script", ["idea.py", "generate_script", "openrouter", "formats"]),
         ("tts", ["voice.py", "elevenlabs", "text_to_speech"]),
-        ("footage", ["pexels", "fetch_footage"]),
+        ("footage", ["pexels", "fetch_footage", "fal", "kling", "generate_footage_ai"]),
         ("assembly", ["assemble_video", "concat"]),
-        ("captions", ["captions.py", "whisper", "burn_caption"]),
+        ("captions", ["captions.py", "whisper", "burn_captions"]),
         ("upload", ["publish.py", "youtube", "upload"]),
     ]:
-        if any(m in tb_text for m in markers):
+        if any(marker in traceback_text for marker in markers):
             return stage
     return "unknown"
 

@@ -9,10 +9,11 @@ import config
 
 logger = logging.getLogger(__name__)
 
-_TOKEN_FILE = "youtube_token.json"
+_TOKEN_FILE = config.BASE_DIR / "youtube_token.json"
 _SCOPES = [
     "https://www.googleapis.com/auth/youtube.upload",
     "https://www.googleapis.com/auth/youtube.readonly",
+    "https://www.googleapis.com/auth/youtube.force-ssl",
 ]
 
 
@@ -23,6 +24,8 @@ def upload_to_youtube(
     tags: list[str] | None = None,
     category_id: str = "22",   # 22 = People & Blogs
     privacy: str = "public",
+    default_language: str = "en",
+    default_audio_language: str = "en",
 ) -> str:
     """Upload *video_path* to YouTube and return the video URL."""
     from google.oauth2.credentials import Credentials  # type: ignore
@@ -44,6 +47,8 @@ def upload_to_youtube(
             "description": description,
             "tags": tags or [],
             "categoryId": category_id,
+            "defaultLanguage": default_language,
+            "defaultAudioLanguage": default_audio_language,
         },
         "status": {"privacyStatus": privacy},
     }
@@ -73,7 +78,7 @@ def upload_to_youtube(
 def _load_or_create_creds(json, Credentials, InstalledAppFlow, google_auth_requests):
     import pickle
 
-    if os.path.exists(_TOKEN_FILE):
+    if _TOKEN_FILE.exists():
         with open(_TOKEN_FILE, "rb") as f:
             creds = pickle.load(f)
         if creds and creds.expired and creds.refresh_token:
