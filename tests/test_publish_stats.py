@@ -155,21 +155,24 @@ class StatsFetchIntegrationTests(unittest.TestCase):
 
     def test_fetch_all_and_update_skips_non_uploaded(self):
         self._add_entries(3)
-        # Simulate fetch returning stats for only 2 (first 2 uploaded, last one produced)
-        def mock_fetch(entry_id):
-            if entry_id in ("clipforge-2026-06-07-001", "clipforge-2026-06-07-002"):
-                return {"views": "100", "likes": "10", "comments": "2", "favorites": "0", "fetched_at": "now"}
-            return None  # third one not yet fetched
-
-        # We need to patch the module-level fetch function
+        # fetch_stats_for_entry receives the full entry dict; simulate stats available
+        # for the first two entries only (third has no youtube_video_id → returns None)
+        uploaded_ids = {"clipforge-2026-06-07-001", "clipforge-2026-06-07-002"}
         original = publish_stats.fetch_stats_for_entry
-        publish_stats.fetch_stats_for_entry = (lambda entry_id: 
-            {"views": "100", "likes": "10", "comments": "2", "favorites": "0", "fetched_at": "now"} if entry_id in ("clipforge-2026-06-07-001", "clipforge-2026-06-07-002") else None)
-
+        publish_stats.fetch_stats_for_entry = (
+            lambda entry: (
+                {"viewCount": "100", "likeCount": "10", "commentCount": "2",
+                 "favoriteCount": "0", "fetched_at": "now"}
+                if isinstance(entry, dict) and entry.get("id") in uploaded_ids
+                else None
+            )
+        )
         try:
             results = publish_stats.fetch_all_and_update(registry_path=self.tmp)
             self.assertEqual(len(results), 3)
-            self.assertEqual(results[2]["success"], False)
+            self.assertTrue(results[0]["success"], "first entry should succeed")
+            self.assertTrue(results[1]["success"], "second entry should succeed")
+            self.assertFalse(results[2]["success"], "third entry should be skipped")
         finally:
             publish_stats.fetch_stats_for_entry = original
 
